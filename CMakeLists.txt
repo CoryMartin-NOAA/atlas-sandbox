@@ -8,7 +8,49 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Find required packages
 find_package(eckit REQUIRED)
 find_package(atlas REQUIRED)
-find_package(NetCDF REQUIRED COMPONENTS CXX)
+
+# Handle NetCDF with support for netcdf_c_ROOT and netcdf_cxx4_ROOT environment variables
+# These are commonly used in JCSDA environments
+if(DEFINED ENV{netcdf_c_ROOT})
+    list(APPEND CMAKE_PREFIX_PATH $ENV{netcdf_c_ROOT})
+endif()
+if(DEFINED ENV{netcdf_cxx4_ROOT})
+    list(APPEND CMAKE_PREFIX_PATH $ENV{netcdf_cxx4_ROOT})
+endif()
+
+# Try to find NetCDF using config mode first
+find_package(NetCDF QUIET CONFIG COMPONENTS CXX)
+
+# If not found, try with module mode or manual detection
+if(NOT NetCDF_FOUND)
+    # Try to find netcdf-cxx4 directly
+    find_package(netCDF QUIET CONFIG)
+    if(netCDF_FOUND)
+        set(NetCDF_FOUND TRUE)
+        # Create imported target if it doesn't exist
+        if(NOT TARGET NetCDF::NetCDF_CXX AND TARGET netCDF::netcdf)
+            add_library(NetCDF::NetCDF_CXX INTERFACE IMPORTED)
+            target_link_libraries(NetCDF::NetCDF_CXX INTERFACE netCDF::netcdf)
+        endif()
+    else()
+        # Manual detection using environment variables
+        if(DEFINED ENV{netcdf_cxx4_ROOT})
+            set(NETCDF_CXX_INCLUDE_DIR "$ENV{netcdf_cxx4_ROOT}/include")
+            set(NETCDF_CXX_LIBRARY "$ENV{netcdf_cxx4_ROOT}/lib/libnetcdf_c++4.so")
+            if(EXISTS "${NETCDF_CXX_INCLUDE_DIR}" AND EXISTS "${NETCDF_CXX_LIBRARY}")
+                set(NetCDF_FOUND TRUE)
+                add_library(NetCDF::NetCDF_CXX INTERFACE IMPORTED)
+                target_include_directories(NetCDF::NetCDF_CXX INTERFACE ${NETCDF_CXX_INCLUDE_DIR})
+                target_link_libraries(NetCDF::NetCDF_CXX INTERFACE ${NETCDF_CXX_LIBRARY})
+                message(STATUS "Found NetCDF C++ using netcdf_cxx4_ROOT: ${NETCDF_CXX_LIBRARY}")
+            endif()
+        endif()
+    endif()
+endif()
+
+if(NOT NetCDF_FOUND)
+    message(FATAL_ERROR "NetCDF not found. Please set netcdf_c_ROOT and netcdf_cxx4_ROOT environment variables or install NetCDF.")
+endif()
 
 # Create executable
 add_executable(atlas_interpolate

@@ -43,7 +43,14 @@ make
 
 ### Manual Build
 
-If you have the required dependencies installed:
+If you have the required dependencies installed, ensure the following environment variables are set:
+
+```bash
+export netcdf_c_ROOT=/path/to/netcdf-c
+export netcdf_cxx4_ROOT=/path/to/netcdf-cxx4
+```
+
+Then build:
 
 ```bash
 mkdir build && cd build

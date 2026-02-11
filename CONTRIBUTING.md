@@ -28,6 +28,12 @@ If you prefer not to use devcontainer, ensure you have these dependencies instal
 - CMake >= 3.12
 - C++17 compatible compiler
 
+Set the following environment variables to help CMake find NetCDF:
+```bash
+export netcdf_c_ROOT=/path/to/netcdf-c
+export netcdf_cxx4_ROOT=/path/to/netcdf-cxx4
+```
+
 ## Building the Project
 
 ```bash
