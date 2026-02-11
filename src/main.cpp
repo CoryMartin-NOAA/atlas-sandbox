@@ -4,6 +4,8 @@
 #include <vector>
 #include <cmath>
 #include <map>
+#include <set>
+#include <algorithm>
 #include <netcdf>
 #include "atlas/grid.h"
 #include "atlas/mesh.h"
@@ -426,6 +428,90 @@ public:
         return targetGrid_.name();
     }
 
+    bool isTargetGridRegularLatLon() const {
+        // Check if target grid is a regular lat-lon grid (starts with "L")
+        return targetGrid_.name()[0] == 'L';
+    }
+
+    std::pair<size_t, size_t> getTargetGridDimensions() const {
+        // For regular lat-lon grids, extract nlon and nlat from grid spec
+        // Grid spec format: "L<nlon>x<nlat>"
+        if (!isTargetGridRegularLatLon()) {
+            return {0, 0};
+        }
+        
+        std::string gridName = targetGrid_.name();
+        size_t xPos = gridName.find('x');
+        if (xPos == std::string::npos) {
+            return {0, 0};
+        }
+        
+        size_t nlon = std::stoul(gridName.substr(1, xPos - 1));
+        size_t nlat = std::stoul(gridName.substr(xPos + 1));
+        
+        return {nlon, nlat};
+    }
+
+    std::vector<double> getTargetUniqueLatitudes() const {
+        // For regular lat-lon grids, extract unique latitudes
+        auto lonlat = array::make_view<double, 2>(targetMesh_.nodes().lonlat());
+        std::set<double> uniqueLats;
+        for (idx_t i = 0; i < lonlat.shape(0); ++i) {
+            uniqueLats.insert(lonlat(i, 1));
+        }
+        return std::vector<double>(uniqueLats.begin(), uniqueLats.end());
+    }
+
+    std::vector<double> getTargetUniqueLongitudes() const {
+        // For regular lat-lon grids, extract unique longitudes
+        auto lonlat = array::make_view<double, 2>(targetMesh_.nodes().lonlat());
+        std::set<double> uniqueLons;
+        for (idx_t i = 0; i < lonlat.shape(0); ++i) {
+            uniqueLons.insert(lonlat(i, 0));
+        }
+        return std::vector<double>(uniqueLons.begin(), uniqueLons.end());
+    }
+
+    std::vector<double> reshape1DTo2D(const std::vector<double>& data1D) const {
+        // Reshape 1D unstructured data to 2D structured format
+        // This assumes the data is in row-major order (lon varies fastest)
+        if (!isTargetGridRegularLatLon()) {
+            return data1D; // Return as-is if not structured
+        }
+        
+        auto [nlon, nlat] = getTargetGridDimensions();
+        std::vector<double> data2D(data1D.size());
+        
+        // Get the mapping from unstructured to structured indices
+        auto lonlat = array::make_view<double, 2>(targetMesh_.nodes().lonlat());
+        
+        // For regular lat-lon grids, we need to reorder from Atlas's ordering
+        // to row-major (lat, lon) ordering
+        auto uniqueLats = getTargetUniqueLatitudes();
+        auto uniqueLons = getTargetUniqueLongitudes();
+        
+        for (idx_t i = 0; i < lonlat.shape(0); ++i) {
+            double lon = lonlat(i, 0);
+            double lat = lonlat(i, 1);
+            
+            // Find indices
+            auto latIt = std::find(uniqueLats.begin(), uniqueLats.end(), lat);
+            auto lonIt = std::find(uniqueLons.begin(), uniqueLons.end(), lon);
+            
+            if (latIt != uniqueLats.end() && lonIt != uniqueLons.end()) {
+                size_t latIdx = std::distance(uniqueLats.begin(), latIt);
+                size_t lonIdx = std::distance(uniqueLons.begin(), lonIt);
+                size_t idx2D = latIdx * nlon + lonIdx;
+                
+                if (idx2D < data2D.size()) {
+                    data2D[idx2D] = data1D[i];
+                }
+            }
+        }
+        
+        return data2D;
+    }
+
     void printTargetGridInfo() {
         std::cout << "\n=== Target Grid Information ===" << std::endl;
         std::cout << "Grid name: " << targetGrid_.name() << std::endl;
@@ -590,31 +676,75 @@ int main(int argc, char* argv[]) {
         // Create dimensions in output file
         std::map<std::string, netCDF::NcDim> outputDims;
         
-        // Create a single grid_points dimension for unstructured output
-        outputDims["grid_points"] = writer.addDimension("grid_points", targetGridSize);
+        // Check if target grid is regular lat-lon for structured output
+        bool isStructuredOutput = interpolator.isTargetGridRegularLatLon();
         
-        // Copy non-spatial dimensions
-        for (const auto& dim : allDims) {
-            if (dim.first != latDimName && dim.first != lonDimName) {
-                outputDims[dim.first] = writer.addDimension(dim.first, dim.second.getSize());
-                std::cout << "  Copied dimension: " << dim.first << " (size: " << dim.second.getSize() << ")" << std::endl;
+        if (isStructuredOutput) {
+            std::cout << "Creating structured output grid..." << std::endl;
+            
+            // Get target grid dimensions
+            auto [nlon, nlat] = interpolator.getTargetGridDimensions();
+            std::cout << "  Target grid: " << nlon << " x " << nlat << std::endl;
+            
+            // Create spatial dimensions
+            outputDims["grid_xt"] = writer.addDimension("grid_xt", nlon);
+            outputDims["grid_yt"] = writer.addDimension("grid_yt", nlat);
+            
+            // Copy non-spatial dimensions
+            for (const auto& dim : allDims) {
+                if (dim.first != latDimName && dim.first != lonDimName) {
+                    outputDims[dim.first] = writer.addDimension(dim.first, dim.second.getSize());
+                    std::cout << "  Copied dimension: " << dim.first << " (size: " << dim.second.getSize() << ")" << std::endl;
+                }
             }
+            
+            // Create 1D coordinate variables
+            auto uniqueLats = interpolator.getTargetUniqueLatitudes();
+            auto uniqueLons = interpolator.getTargetUniqueLongitudes();
+            
+            auto latVar = writer.addVariable("grid_yt", netCDF::ncDouble, {outputDims["grid_yt"]});
+            latVar.putAtt("units", "degrees_north");
+            latVar.putAtt("long_name", "T-cell latitude");
+            latVar.putAtt("cartesian_axis", "Y");
+            writer.writeVariableData("grid_yt", uniqueLats);
+            
+            auto lonVar = writer.addVariable("grid_xt", netCDF::ncDouble, {outputDims["grid_xt"]});
+            lonVar.putAtt("units", "degrees_east");
+            lonVar.putAtt("long_name", "T-cell longitude");
+            lonVar.putAtt("cartesian_axis", "X");
+            writer.writeVariableData("grid_xt", uniqueLons);
+            
+            std::cout << "  Created structured coordinate variables (grid_xt, grid_yt)" << std::endl;
+        } else {
+            std::cout << "Creating unstructured output grid (grid_points dimension)..." << std::endl;
+            std::cout << "  Note: For structured output, use a regular lat-lon target grid (e.g., L360x181)" << std::endl;
+            
+            // Create a single grid_points dimension for unstructured output
+            outputDims["grid_points"] = writer.addDimension("grid_points", targetGridSize);
+            
+            // Copy non-spatial dimensions
+            for (const auto& dim : allDims) {
+                if (dim.first != latDimName && dim.first != lonDimName) {
+                    outputDims[dim.first] = writer.addDimension(dim.first, dim.second.getSize());
+                    std::cout << "  Copied dimension: " << dim.first << " (size: " << dim.second.getSize() << ")" << std::endl;
+                }
+            }
+            
+            // Create coordinate variables
+            auto latVar = writer.addVariable("lat", netCDF::ncDouble, {outputDims["grid_points"]});
+            latVar.putAtt("units", "degrees_north");
+            latVar.putAtt("long_name", "latitude");
+            latVar.putAtt("standard_name", "latitude");
+            writer.writeVariableData("lat", targetLats);
+            
+            auto lonVar = writer.addVariable("lon", netCDF::ncDouble, {outputDims["grid_points"]});
+            lonVar.putAtt("units", "degrees_east");
+            lonVar.putAtt("long_name", "longitude");
+            lonVar.putAtt("standard_name", "longitude");
+            writer.writeVariableData("lon", targetLons);
+            
+            std::cout << "  Created coordinate variables (lat, lon)" << std::endl;
         }
-        
-        // Create coordinate variables
-        auto latVar = writer.addVariable("lat", netCDF::ncDouble, {outputDims["grid_points"]});
-        latVar.putAtt("units", "degrees_north");
-        latVar.putAtt("long_name", "latitude");
-        latVar.putAtt("standard_name", "latitude");
-        writer.writeVariableData("lat", targetLats);
-        
-        auto lonVar = writer.addVariable("lon", netCDF::ncDouble, {outputDims["grid_points"]});
-        lonVar.putAtt("units", "degrees_east");
-        lonVar.putAtt("long_name", "longitude");
-        lonVar.putAtt("standard_name", "longitude");
-        writer.writeVariableData("lon", targetLons);
-        
-        std::cout << "  Created coordinate variables (lat, lon)" << std::endl;
         
         // Identify and interpolate variables
         std::cout << "\n=== Interpolating Variables ===" << std::endl;
@@ -671,9 +801,18 @@ int main(int argc, char* argv[]) {
             
             for (const auto& dim : sourceDims) {
                 if (dim.getName() == latDimName || dim.getName() == lonDimName) {
-                    // Replace with grid_points dimension (only add once)
-                    if (outDims.empty() || outDims.back().getName() != "grid_points") {
-                        outDims.push_back(outputDims["grid_points"]);
+                    // Replace with output spatial dimensions
+                    if (isStructuredOutput) {
+                        // Use grid_yt and grid_xt for structured output
+                        if (outDims.empty() || (outDims.back().getName() != "grid_yt" && outDims.back().getName() != "grid_xt")) {
+                            outDims.push_back(outputDims["grid_yt"]);
+                            outDims.push_back(outputDims["grid_xt"]);
+                        }
+                    } else {
+                        // Use grid_points for unstructured output (only add once)
+                        if (outDims.empty() || outDims.back().getName() != "grid_points") {
+                            outDims.push_back(outputDims["grid_points"]);
+                        }
                     }
                 } else {
                     // Keep other dimensions
@@ -691,6 +830,12 @@ int main(int argc, char* argv[]) {
                 // Simple 2D variable
                 auto sourceData = reader.readVariable(varName);
                 auto interpolatedData = interpolator.interpolate(sourceData);
+                
+                // Reshape if structured output
+                if (isStructuredOutput) {
+                    interpolatedData = interpolator.reshape1DTo2D(interpolatedData);
+                }
+                
                 writer.writeVariableData(varName, interpolatedData);
             } else {
                 // 3D or higher dimensional variable - interpolate each 2D slice
@@ -724,6 +869,12 @@ int main(int argc, char* argv[]) {
                               sliceData.begin());
                     
                     auto interpolatedSlice = interpolator.interpolate(sliceData);
+                    
+                    // Reshape if structured output
+                    if (isStructuredOutput) {
+                        interpolatedSlice = interpolator.reshape1DTo2D(interpolatedSlice);
+                    }
+                    
                     allInterpolatedData.insert(allInterpolatedData.end(),
                                                interpolatedSlice.begin(),
                                                interpolatedSlice.end());
