@@ -123,15 +123,15 @@ public:
         return ncfile_->getVar(varName);
     }
 
-    std::map<std::string, netCDF::NcVar> getAllVariables() {
+    std::multimap<std::string, netCDF::NcVar> getAllVariables() {
         return ncfile_->getVars();
     }
 
-    std::map<std::string, netCDF::NcDim> getAllDimensions() {
+    std::multimap<std::string, netCDF::NcDim> getAllDimensions() {
         return ncfile_->getDims();
     }
 
-    std::map<std::string, netCDF::NcGroupAtt> getGlobalAttributes() {
+    std::multimap<std::string, netCDF::NcGroupAtt> getGlobalAttributes() {
         return ncfile_->getAtts();
     }
 
@@ -174,7 +174,7 @@ public:
         }
     }
 
-    void copyGlobalAttributes(const std::map<std::string, netCDF::NcGroupAtt>& attrs) {
+    void copyGlobalAttributes(const std::multimap<std::string, netCDF::NcGroupAtt>& attrs) {
         std::cout << "Copying global attributes..." << std::endl;
         for (const auto& attr : attrs) {
             copyAttribute(attr.second, ncfile_.get());
