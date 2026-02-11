@@ -338,7 +338,8 @@ public:
         
         // Create meshes and function spaces
         std::cout << "Generating source mesh..." << std::endl;
-        auto meshConfig = util::Config("partitioner", "equal_regions");
+        util::Config meshConfig;
+        meshConfig.set("partitioner.type", "equal_regions");
         sourceMesh_ = MeshGenerator("structured").generate(sourceGrid_, meshConfig);
         
         std::cout << "Generating target mesh..." << std::endl;
