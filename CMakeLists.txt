@@ -63,7 +63,10 @@ if(NOT NetCDF_FOUND)
 endif()
 
 if(NOT NetCDF_FOUND)
-    message(FATAL_ERROR "NetCDF not found. Please set netcdf_c_ROOT and netcdf_cxx4_ROOT environment variables or install NetCDF.")
+    message(FATAL_ERROR "NetCDF C++ library not found. Please ensure:\n"
+                        "  1. NetCDF-CXX4 is installed, or\n"
+                        "  2. Set netcdf_cxx4_ROOT environment variable pointing to NetCDF-CXX4 installation\n"
+                        "     (netcdf_c_ROOT can also help CMake find NetCDF C library)")
 endif()
 
 # Create executable
