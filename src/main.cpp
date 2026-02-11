@@ -353,7 +353,7 @@ public:
         // Create interpolation
         std::cout << "Setting up interpolation scheme..." << std::endl;
         interpolation_ = Interpolation(
-            option::type("structured-linear2D"),
+            option::type("unstructured-bilinear-lonlat"),
             sourceFunctionSpace_,
             targetFunctionSpace_
         );
