@@ -61,37 +61,57 @@ public:
 
     std::vector<double> readLatitudes() {
         // Try common latitude variable names
-        std::vector<std::string> latNames = {"lat", "latitude", "grid_yt"};
+        // First try 1D coordinate variables (for regular lat-lon grids)
+        std::vector<std::string> latNames = {"grid_yt", "latitude", "lat"};
         
         for (const auto& name : latNames) {
             if (hasVariable(name)) {
                 netCDF::NcVar latVar = ncfile_->getVar(name);
-                std::vector<double> lats(latVar.getDim(0).getSize());
-                latVar.getVar(lats.data());
-                std::cout << "Read " << lats.size() << " latitude values from '" << name << "'" << std::endl;
-                return lats;
+                auto dims = latVar.getDims();
+                
+                // Only read 1D latitude coordinates
+                if (dims.size() == 1) {
+                    std::vector<double> lats(dims[0].getSize());
+                    latVar.getVar(lats.data());
+                    std::cout << "Read " << lats.size() << " latitude values from '" << name << "'" << std::endl;
+                    return lats;
+                } else {
+                    std::cerr << "Warning: '" << name << "' is " << dims.size() << "D (expected 1D)" << std::endl;
+                }
             }
         }
         
-        std::cerr << "Could not find latitude variable" << std::endl;
+        std::cerr << "Error: Could not find 1D latitude coordinate variable." << std::endl;
+        std::cerr << "This tool currently only supports regular lat-lon grids." << std::endl;
+        std::cerr << "Curvilinear grids (with 2D lat/lon arrays) are not yet supported." << std::endl;
         return {};
     }
 
     std::vector<double> readLongitudes() {
         // Try common longitude variable names
-        std::vector<std::string> lonNames = {"lon", "longitude", "grid_xt"};
+        // First try 1D coordinate variables (for regular lat-lon grids)
+        std::vector<std::string> lonNames = {"grid_xt", "longitude", "lon"};
         
         for (const auto& name : lonNames) {
             if (hasVariable(name)) {
                 netCDF::NcVar lonVar = ncfile_->getVar(name);
-                std::vector<double> lons(lonVar.getDim(0).getSize());
-                lonVar.getVar(lons.data());
-                std::cout << "Read " << lons.size() << " longitude values from '" << name << "'" << std::endl;
-                return lons;
+                auto dims = lonVar.getDims();
+                
+                // Only read 1D longitude coordinates
+                if (dims.size() == 1) {
+                    std::vector<double> lons(dims[0].getSize());
+                    lonVar.getVar(lons.data());
+                    std::cout << "Read " << lons.size() << " longitude values from '" << name << "'" << std::endl;
+                    return lons;
+                } else {
+                    std::cerr << "Warning: '" << name << "' is " << dims.size() << "D (expected 1D)" << std::endl;
+                }
             }
         }
         
-        std::cerr << "Could not find longitude variable" << std::endl;
+        std::cerr << "Error: Could not find 1D longitude coordinate variable." << std::endl;
+        std::cerr << "This tool currently only supports regular lat-lon grids." << std::endl;
+        std::cerr << "Curvilinear grids (with 2D lat/lon arrays) are not yet supported." << std::endl;
         return {};
     }
 
