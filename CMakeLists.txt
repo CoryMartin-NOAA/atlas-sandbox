@@ -35,17 +35,23 @@ if(NOT NetCDF_FOUND)
     else()
         # Manual detection using environment variables
         if(DEFINED ENV{netcdf_cxx4_ROOT})
-            set(NETCDF_CXX_INCLUDE_DIR "$ENV{netcdf_cxx4_ROOT}/include")
+            # Try to find the include directory with header validation
+            find_path(NETCDF_CXX_INCLUDE_DIR
+                NAMES ncVar.h netcdf
+                HINTS $ENV{netcdf_cxx4_ROOT}
+                PATH_SUFFIXES include
+                NO_DEFAULT_PATH
+            )
             
             # Try to find the library with platform-independent search
             find_library(NETCDF_CXX_LIBRARY
                 NAMES netcdf_c++4 netcdf-cxx4
                 HINTS $ENV{netcdf_cxx4_ROOT}
-                PATH_SUFFIXES lib lib64 lib/x86_64-linux-gnu
+                PATH_SUFFIXES lib lib64 lib/x86_64-linux-gnu Library/lib bin
                 NO_DEFAULT_PATH
             )
             
-            if(NETCDF_CXX_LIBRARY AND EXISTS "${NETCDF_CXX_INCLUDE_DIR}")
+            if(NETCDF_CXX_LIBRARY AND NETCDF_CXX_INCLUDE_DIR)
                 set(NetCDF_FOUND TRUE)
                 add_library(NetCDF::NetCDF_CXX INTERFACE IMPORTED)
                 target_include_directories(NetCDF::NetCDF_CXX INTERFACE ${NETCDF_CXX_INCLUDE_DIR})
