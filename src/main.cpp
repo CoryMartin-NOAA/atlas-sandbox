@@ -3,8 +3,13 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <map>
+#include <set>
+#include <algorithm>
+#include <limits>
 #include <netcdf>
 #include "atlas/grid.h"
+#include "atlas/grid/StructuredGrid.h"
 #include "atlas/mesh.h"
 #include "atlas/meshgenerator.h"
 #include "atlas/functionspace.h"
@@ -12,6 +17,7 @@
 #include "atlas/array.h"
 #include "atlas/interpolation.h"
 #include "atlas/option.h"
+#include "atlas/library/Library.h"
 #include "eckit/log/Log.h"
 
 using namespace atlas;
@@ -60,37 +66,57 @@ public:
 
     std::vector<double> readLatitudes() {
         // Try common latitude variable names
-        std::vector<std::string> latNames = {"lat", "latitude", "grid_yt"};
+        // First try 1D coordinate variables (for regular lat-lon grids)
+        std::vector<std::string> latNames = {"grid_yt", "latitude", "lat"};
         
         for (const auto& name : latNames) {
             if (hasVariable(name)) {
                 netCDF::NcVar latVar = ncfile_->getVar(name);
-                std::vector<double> lats(latVar.getDim(0).getSize());
-                latVar.getVar(lats.data());
-                std::cout << "Read " << lats.size() << " latitude values from '" << name << "'" << std::endl;
-                return lats;
+                auto dims = latVar.getDims();
+                
+                // Only read 1D latitude coordinates
+                if (dims.size() == 1) {
+                    std::vector<double> lats(dims[0].getSize());
+                    latVar.getVar(lats.data());
+                    std::cout << "Read " << lats.size() << " latitude values from '" << name << "'" << std::endl;
+                    return lats;
+                } else {
+                    std::cerr << "Warning: '" << name << "' is " << dims.size() << "D (expected 1D)" << std::endl;
+                }
             }
         }
         
-        std::cerr << "Could not find latitude variable" << std::endl;
+        std::cerr << "Error: Could not find 1D latitude coordinate variable." << std::endl;
+        std::cerr << "This tool currently only supports regular lat-lon grids." << std::endl;
+        std::cerr << "Curvilinear grids (with 2D lat/lon arrays) are not yet supported." << std::endl;
         return {};
     }
 
     std::vector<double> readLongitudes() {
         // Try common longitude variable names
-        std::vector<std::string> lonNames = {"lon", "longitude", "grid_xt"};
+        // First try 1D coordinate variables (for regular lat-lon grids)
+        std::vector<std::string> lonNames = {"grid_xt", "longitude", "lon"};
         
         for (const auto& name : lonNames) {
             if (hasVariable(name)) {
                 netCDF::NcVar lonVar = ncfile_->getVar(name);
-                std::vector<double> lons(lonVar.getDim(0).getSize());
-                lonVar.getVar(lons.data());
-                std::cout << "Read " << lons.size() << " longitude values from '" << name << "'" << std::endl;
-                return lons;
+                auto dims = lonVar.getDims();
+                
+                // Only read 1D longitude coordinates
+                if (dims.size() == 1) {
+                    std::vector<double> lons(dims[0].getSize());
+                    lonVar.getVar(lons.data());
+                    std::cout << "Read " << lons.size() << " longitude values from '" << name << "'" << std::endl;
+                    return lons;
+                } else {
+                    std::cerr << "Warning: '" << name << "' is " << dims.size() << "D (expected 1D)" << std::endl;
+                }
             }
         }
         
-        std::cerr << "Could not find longitude variable" << std::endl;
+        std::cerr << "Error: Could not find 1D longitude coordinate variable." << std::endl;
+        std::cerr << "This tool currently only supports regular lat-lon grids." << std::endl;
+        std::cerr << "Curvilinear grids (with 2D lat/lon arrays) are not yet supported." << std::endl;
         return {};
     }
 
@@ -118,9 +144,183 @@ public:
         return data;
     }
 
+    netCDF::NcVar getVariable(const std::string& varName) {
+        return ncfile_->getVar(varName);
+    }
+
+    std::multimap<std::string, netCDF::NcVar> getAllVariables() {
+        return ncfile_->getVars();
+    }
+
+    std::multimap<std::string, netCDF::NcDim> getAllDimensions() {
+        return ncfile_->getDims();
+    }
+
+    std::multimap<std::string, netCDF::NcGroupAtt> getGlobalAttributes() {
+        return ncfile_->getAtts();
+    }
+
+    std::string getLatitudeDimName() {
+        std::vector<std::string> latNames = {"lat", "latitude", "grid_yt", "yt"};
+        auto dims = ncfile_->getDims();
+        for (const auto& name : latNames) {
+            if (dims.find(name) != dims.end()) {
+                return name;
+            }
+        }
+        return "";
+    }
+
+    std::string getLongitudeDimName() {
+        std::vector<std::string> lonNames = {"lon", "longitude", "grid_xt", "xt"};
+        auto dims = ncfile_->getDims();
+        for (const auto& name : lonNames) {
+            if (dims.find(name) != dims.end()) {
+                return name;
+            }
+        }
+        return "";
+    }
+
 private:
     std::string filename_;
     std::unique_ptr<netCDF::NcFile> ncfile_;
+};
+
+class NetCDFWriter {
+public:
+    NetCDFWriter(const std::string& filename) : filename_(filename) {
+        try {
+            ncfile_ = std::make_unique<netCDF::NcFile>(filename, netCDF::NcFile::replace);
+            std::cout << "Created output file: " << filename << std::endl;
+        } catch (netCDF::exceptions::NcException& e) {
+            std::cerr << "Error creating NetCDF file: " << e.what() << std::endl;
+            throw;
+        }
+    }
+
+    void copyGlobalAttributes(const std::multimap<std::string, netCDF::NcGroupAtt>& attrs) {
+        std::cout << "Copying global attributes..." << std::endl;
+        for (const auto& attr : attrs) {
+            copyAttribute(attr.second, ncfile_.get());
+        }
+    }
+
+    void addInterpolationHistory(const std::string& sourceFile, 
+                                  const std::string& originalResolution,
+                                  const std::string& targetGrid) {
+        std::string history = "Interpolated from " + sourceFile + 
+                              " (original resolution: " + originalResolution + 
+                              ") to " + targetGrid + " using Atlas interpolation";
+        ncfile_->putAtt("interpolation_history", history);
+        std::cout << "Added interpolation history attribute" << std::endl;
+    }
+
+    netCDF::NcDim addDimension(const std::string& name, size_t size) {
+        return ncfile_->addDim(name, size);
+    }
+
+    netCDF::NcVar addVariable(const std::string& name, netCDF::NcType type,
+                              const std::vector<netCDF::NcDim>& dims) {
+        return ncfile_->addVar(name, type, dims);
+    }
+
+    void writeVariableData(const std::string& varName, const std::vector<double>& data) {
+        auto var = ncfile_->getVar(varName);
+        if (var.isNull()) {
+            std::cerr << "Variable " << varName << " not found for writing" << std::endl;
+            return;
+        }
+        var.putVar(data.data());
+    }
+
+    void writeVariableData(const std::string& varName, const std::vector<float>& data) {
+        auto var = ncfile_->getVar(varName);
+        if (var.isNull()) {
+            std::cerr << "Variable " << varName << " not found for writing" << std::endl;
+            return;
+        }
+        var.putVar(data.data());
+    }
+
+    void copyVariableAttributes(const netCDF::NcVar& sourceVar, const std::string& targetVarName) {
+        auto targetVar = ncfile_->getVar(targetVarName);
+        if (targetVar.isNull()) {
+            std::cerr << "Target variable " << targetVarName << " not found" << std::endl;
+            return;
+        }
+        
+        auto attrs = sourceVar.getAtts();
+        for (const auto& attr : attrs) {
+            copyAttribute(attr.second, &targetVar);
+        }
+    }
+
+private:
+    std::string filename_;
+    std::unique_ptr<netCDF::NcFile> ncfile_;
+
+    void copyAttribute(const netCDF::NcAtt& attr, netCDF::NcGroup* group) {
+        auto type = attr.getType();
+        size_t len = attr.getAttLength();
+        
+        if (type == netCDF::ncChar) {
+            std::string value;
+            attr.getValues(value);
+            group->putAtt(attr.getName(), value);
+        } else if (type == netCDF::ncFloat) {
+            std::vector<float> values(len);
+            attr.getValues(values.data());
+            group->putAtt(attr.getName(), type, len, values.data());
+        } else if (type == netCDF::ncDouble) {
+            std::vector<double> values(len);
+            attr.getValues(values.data());
+            group->putAtt(attr.getName(), type, len, values.data());
+        } else if (type == netCDF::ncInt) {
+            std::vector<int> values(len);
+            attr.getValues(values.data());
+            group->putAtt(attr.getName(), type, len, values.data());
+        } else if (type == netCDF::ncShort) {
+            std::vector<short> values(len);
+            attr.getValues(values.data());
+            group->putAtt(attr.getName(), type, len, values.data());
+        } else if (type == netCDF::ncByte) {
+            std::vector<signed char> values(len);
+            attr.getValues(values.data());
+            group->putAtt(attr.getName(), type, len, values.data());
+        }
+    }
+
+    void copyAttribute(const netCDF::NcAtt& attr, netCDF::NcVar* var) {
+        auto type = attr.getType();
+        size_t len = attr.getAttLength();
+        
+        if (type == netCDF::ncChar) {
+            std::string value;
+            attr.getValues(value);
+            var->putAtt(attr.getName(), value);
+        } else if (type == netCDF::ncFloat) {
+            std::vector<float> values(len);
+            attr.getValues(values.data());
+            var->putAtt(attr.getName(), type, len, values.data());
+        } else if (type == netCDF::ncDouble) {
+            std::vector<double> values(len);
+            attr.getValues(values.data());
+            var->putAtt(attr.getName(), type, len, values.data());
+        } else if (type == netCDF::ncInt) {
+            std::vector<int> values(len);
+            attr.getValues(values.data());
+            var->putAtt(attr.getName(), type, len, values.data());
+        } else if (type == netCDF::ncShort) {
+            std::vector<short> values(len);
+            attr.getValues(values.data());
+            var->putAtt(attr.getName(), type, len, values.data());
+        } else if (type == netCDF::ncByte) {
+            std::vector<signed char> values(len);
+            attr.getValues(values.data());
+            var->putAtt(attr.getName(), type, len, values.data());
+        }
+    }
 };
 
 class AtlasInterpolator {
@@ -140,13 +340,21 @@ public:
         std::cout << "Creating target grid: " << targetGridSpec << std::endl;
         targetGrid_ = Grid(targetGridSpec);
         
+        // Check for reduced Gaussian grids and warn user
+        if (isTargetGridReducedGaussian()) {
+            std::cerr << "\n*** WARNING: Reduced Gaussian grid detected (e.g., N96, O96) ***" << std::endl;
+            std::cerr << "Reduced Gaussian grids have variable numbers of longitude points per latitude." << std::endl;
+            std::cerr << "This can cause issues with 2D structured output and may produce unrealistic results." << std::endl;
+            std::cerr << "RECOMMENDATION: Use regular Gaussian grids instead (F-type, e.g., F96)." << std::endl;
+            std::cerr << "Regular Gaussian grids have uniform longitude spacing and work better with structured output.\n" << std::endl;
+        }
+        
         // Create meshes and function spaces
         std::cout << "Generating source mesh..." << std::endl;
-        auto meshConfig = util::Config("partitioner", "equal_regions");
-        sourceMesh_ = MeshGenerator("structured").generate(sourceGrid_, meshConfig);
+        sourceMesh_ = MeshGenerator("structured").generate(sourceGrid_);
         
         std::cout << "Generating target mesh..." << std::endl;
-        targetMesh_ = MeshGenerator("structured").generate(targetGrid_, meshConfig);
+        targetMesh_ = MeshGenerator("structured").generate(targetGrid_);
         
         // Create function spaces
         sourceFunctionSpace_ = functionspace::NodeColumns(sourceMesh_);
@@ -158,7 +366,7 @@ public:
         // Create interpolation
         std::cout << "Setting up interpolation scheme..." << std::endl;
         interpolation_ = Interpolation(
-            option::type("structured-linear2D"),
+            option::type("unstructured-bilinear-lonlat"),
             sourceFunctionSpace_,
             targetFunctionSpace_
         );
@@ -203,6 +411,194 @@ public:
         printStatistics(sourceData, result);
         
         return result;
+    }
+
+    std::vector<double> getTargetLatitudes() {
+        auto lonlat = array::make_view<double, 2>(targetMesh_.nodes().lonlat());
+        std::vector<double> lats(lonlat.shape(0));
+        for (idx_t i = 0; i < lonlat.shape(0); ++i) {
+            lats[i] = lonlat(i, 1);
+        }
+        return lats;
+    }
+
+    std::vector<double> getTargetLongitudes() {
+        auto lonlat = array::make_view<double, 2>(targetMesh_.nodes().lonlat());
+        std::vector<double> lons(lonlat.shape(0));
+        for (idx_t i = 0; i < lonlat.shape(0); ++i) {
+            lons[i] = lonlat(i, 0);
+        }
+        return lons;
+    }
+
+    size_t getTargetGridSize() const {
+        return targetFunctionSpace_.size();
+    }
+
+    std::string getTargetGridName() const {
+        return targetGrid_.name();
+    }
+
+    bool isTargetGridRegularLatLon() const {
+        // Check if target grid is a regular lat-lon grid (starts with "L")
+        return targetGrid_.name()[0] == 'L';
+    }
+
+    bool isTargetGridStructured() const {
+        // Check if target grid is structured (has 2D lat-lon structure)
+        // This includes regular lat-lon (L), Gaussian (N, O, F), and reduced Gaussian grids
+        if (!targetGrid_) return false;
+        
+        // Try to get the grid as a structured grid
+        try {
+            auto grid = StructuredGrid(targetGrid_);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    bool isTargetGridReducedGaussian() const {
+        // Check if target grid is a reduced Gaussian grid (variable number of points per latitude)
+        if (!isTargetGridStructured()) return false;
+        
+        try {
+            auto grid = StructuredGrid(targetGrid_);
+            
+            // Check if different latitudes have different numbers of longitudes
+            if (grid.ny() < 2) return false;
+            
+            idx_t firstNx = grid.nx(0);
+            for (idx_t j = 1; j < grid.ny(); ++j) {
+                if (grid.nx(j) != firstNx) {
+                    return true;  // Found different nx values - this is reduced
+                }
+            }
+            return false;  // All nx values are the same - regular grid
+        } catch (...) {
+            return false;
+        }
+    }
+
+    std::pair<size_t, size_t> getTargetGridDimensions() const {
+        // For regular lat-lon grids, extract nlon and nlat from grid spec
+        // Grid spec format: "L<nlon>x<nlat>"
+        if (isTargetGridRegularLatLon()) {
+            std::string gridName = targetGrid_.name();
+            size_t xPos = gridName.find('x');
+            if (xPos == std::string::npos) {
+                return {0, 0};
+            }
+            
+            size_t nlon = std::stoul(gridName.substr(1, xPos - 1));
+            size_t nlat = std::stoul(gridName.substr(xPos + 1));
+            
+            return {nlon, nlat};
+        }
+        
+        // For other structured grids (Gaussian, etc.), use Atlas grid properties
+        if (isTargetGridStructured()) {
+            try {
+                auto grid = StructuredGrid(targetGrid_);
+                size_t nlat = grid.ny();
+                
+                // For regular grids, all latitudes have same number of longitudes
+                // For reduced grids, we'll use the maximum
+                size_t nlon = 0;
+                for (idx_t j = 0; j < grid.ny(); ++j) {
+                    nlon = std::max(nlon, static_cast<size_t>(grid.nx(j)));
+                }
+                
+                return {nlon, nlat};
+            } catch (...) {
+                return {0, 0};
+            }
+        }
+        
+        return {0, 0};
+    }
+
+    std::vector<double> getTargetUniqueLatitudes() const {
+        // For regular lat-lon grids, extract unique latitudes
+        auto lonlat = array::make_view<double, 2>(targetMesh_.nodes().lonlat());
+        std::set<double> uniqueLats;
+        for (idx_t i = 0; i < lonlat.shape(0); ++i) {
+            uniqueLats.insert(lonlat(i, 1));
+        }
+        return std::vector<double>(uniqueLats.begin(), uniqueLats.end());
+    }
+
+    std::vector<double> getTargetUniqueLongitudes() const {
+        // For regular lat-lon grids, extract unique longitudes
+        auto lonlat = array::make_view<double, 2>(targetMesh_.nodes().lonlat());
+        std::set<double> uniqueLons;
+        for (idx_t i = 0; i < lonlat.shape(0); ++i) {
+            uniqueLons.insert(lonlat(i, 0));
+        }
+        return std::vector<double>(uniqueLons.begin(), uniqueLons.end());
+    }
+
+    std::vector<double> reshape1DTo2D(const std::vector<double>& data1D) const {
+        // Reshape 1D unstructured data to 2D structured format
+        // Works for any structured grid (regular lat-lon, Gaussian, etc.)
+        if (!isTargetGridStructured()) {
+            return data1D; // Return as-is if not structured
+        }
+        
+        auto [nlon, nlat] = getTargetGridDimensions();
+        if (nlon == 0 || nlat == 0) {
+            return data1D; // Can't reshape if dimensions unknown
+        }
+        
+        std::vector<double> data2D(nlon * nlat, std::numeric_limits<double>::quiet_NaN());
+        
+        // Get the mapping from unstructured to structured indices
+        auto lonlat = array::make_view<double, 2>(targetMesh_.nodes().lonlat());
+        
+        // For structured grids, we need to reorder from Atlas's ordering
+        // to row-major (lat, lon) ordering
+        auto uniqueLats = getTargetUniqueLatitudes();
+        auto uniqueLons = getTargetUniqueLongitudes();
+        
+        // For efficiency, use tolerance for floating point comparison
+        const double tol = 1e-10;
+        
+        for (idx_t i = 0; i < lonlat.shape(0); ++i) {
+            double lon = lonlat(i, 0);
+            double lat = lonlat(i, 1);
+            
+            // Find indices with tolerance
+            size_t latIdx = 0;
+            size_t lonIdx = 0;
+            bool foundLat = false;
+            bool foundLon = false;
+            
+            for (size_t j = 0; j < uniqueLats.size(); ++j) {
+                if (std::abs(lat - uniqueLats[j]) < tol) {
+                    latIdx = j;
+                    foundLat = true;
+                    break;
+                }
+            }
+            
+            for (size_t j = 0; j < uniqueLons.size(); ++j) {
+                if (std::abs(lon - uniqueLons[j]) < tol) {
+                    lonIdx = j;
+                    foundLon = true;
+                    break;
+                }
+            }
+            
+            if (foundLat && foundLon) {
+                size_t idx2D = latIdx * nlon + lonIdx;
+                
+                if (idx2D < data2D.size() && i < static_cast<idx_t>(data1D.size())) {
+                    data2D[idx2D] = data1D[i];
+                }
+            }
+        }
+        
+        return data2D;
     }
 
     void printTargetGridInfo() {
@@ -280,36 +676,48 @@ private:
 };
 
 void printUsage(const char* progName) {
-    std::cout << "Usage: " << progName << " <netcdf_file> <target_grid> [variable_name]" << std::endl;
+    std::cout << "Usage: " << progName << " <netcdf_file> <target_grid> <output_file> [variable_name]" << std::endl;
     std::cout << "\nArguments:" << std::endl;
     std::cout << "  netcdf_file    : Path to NetCDF file to read" << std::endl;
     std::cout << "  target_grid    : Target grid specification (e.g., 'O32', 'N32', 'L360x181')" << std::endl;
-    std::cout << "  variable_name  : Optional variable to interpolate (default: 'tmp')" << std::endl;
+    std::cout << "  output_file    : Path to output NetCDF file" << std::endl;
+    std::cout << "  variable_name  : Optional specific variable to interpolate (default: all x,y and x,y,z variables)" << std::endl;
     std::cout << "\nGrid specifications:" << std::endl;
     std::cout << "  O<n>     : Octahedral reduced Gaussian grid with <n> latitude lines" << std::endl;
     std::cout << "  N<n>     : Regular Gaussian grid with <n> latitude lines" << std::endl;
     std::cout << "  L<nx>x<ny> : Regular lat-lon grid with <nx> longitudes and <ny> latitudes" << std::endl;
     std::cout << "\nExample:" << std::endl;
-    std::cout << "  " << progName << " gdas.t00z.atmf006.nc O32 tmp" << std::endl;
+    std::cout << "  " << progName << " gdas.t00z.atmf006.nc O32 gdas_interpolated.nc" << std::endl;
+    std::cout << "  " << progName << " gdas.t00z.atmf006.nc L360x181 output.nc tmp" << std::endl;
 }
 
 int main(int argc, char* argv[]) {
+    // Initialize Atlas library
+    atlas::Library::instance().initialise(argc, argv);
+    
     std::cout << "=== Atlas NetCDF Interpolation Example ===" << std::endl;
     
     // Parse command line arguments
-    if (argc < 3) {
+    if (argc < 4) {
         printUsage(argv[0]);
+        atlas::Library::instance().finalise();
         return 1;
     }
     
     std::string inputFile = argv[1];
     std::string targetGridSpec = argv[2];
-    std::string variableName = (argc >= 4) ? argv[3] : "tmp";
+    std::string outputFile = argv[3];
+    std::string specificVariable = (argc >= 5) ? argv[4] : "";
     
     std::cout << "\nConfiguration:" << std::endl;
     std::cout << "  Input file: " << inputFile << std::endl;
     std::cout << "  Target grid: " << targetGridSpec << std::endl;
-    std::cout << "  Variable: " << variableName << std::endl;
+    std::cout << "  Output file: " << outputFile << std::endl;
+    if (!specificVariable.empty()) {
+        std::cout << "  Specific variable: " << specificVariable << std::endl;
+    } else {
+        std::cout << "  Mode: Interpolate all x,y and x,y,z variables" << std::endl;
+    }
     
     try {
         // Read NetCDF file
@@ -322,31 +730,262 @@ int main(int argc, char* argv[]) {
         
         if (lats.empty() || lons.empty()) {
             std::cerr << "Error: Could not read coordinates from NetCDF file" << std::endl;
+            atlas::Library::instance().finalise();
             return 1;
         }
         
-        // Read variable
-        auto data = reader.readVariable(variableName);
-        if (data.empty()) {
-            std::cerr << "Error: Could not read variable '" << variableName << "'" << std::endl;
-            return 1;
-        }
+        std::string latDimName = reader.getLatitudeDimName();
+        std::string lonDimName = reader.getLongitudeDimName();
         
-        // Setup and perform interpolation
+        // Setup interpolation
         AtlasInterpolator interpolator(lats, lons, targetGridSpec);
         interpolator.printTargetGridInfo();
         
-        auto interpolatedData = interpolator.interpolate(data);
+        // Create output file
+        NetCDFWriter writer(outputFile);
+        
+        // Copy global attributes
+        writer.copyGlobalAttributes(reader.getGlobalAttributes());
+        
+        // Add interpolation history
+        std::string originalResolution = std::to_string(lons.size()) + "x" + std::to_string(lats.size());
+        writer.addInterpolationHistory(inputFile, originalResolution, targetGridSpec);
+        
+        // Get target grid info
+        size_t targetGridSize = interpolator.getTargetGridSize();
+        auto targetLats = interpolator.getTargetLatitudes();
+        auto targetLons = interpolator.getTargetLongitudes();
+        
+        std::cout << "\n=== Creating Output File Structure ===" << std::endl;
+        
+        // Get all variables and dimensions from input
+        auto allVars = reader.getAllVariables();
+        auto allDims = reader.getAllDimensions();
+        
+        // Create dimensions in output file
+        std::map<std::string, netCDF::NcDim> outputDims;
+        
+        // Check if target grid is structured for 2D output
+        bool isStructuredOutput = interpolator.isTargetGridStructured();
+        
+        if (isStructuredOutput) {
+            std::cout << "Creating structured 2D output grid..." << std::endl;
+            
+            // Get target grid dimensions
+            auto [nlon, nlat] = interpolator.getTargetGridDimensions();
+            std::cout << "  Target grid: " << nlon << " x " << nlat << std::endl;
+            
+            // Create spatial dimensions
+            outputDims["grid_xt"] = writer.addDimension("grid_xt", nlon);
+            outputDims["grid_yt"] = writer.addDimension("grid_yt", nlat);
+            
+            // Copy non-spatial dimensions
+            for (const auto& dim : allDims) {
+                if (dim.first != latDimName && dim.first != lonDimName) {
+                    outputDims[dim.first] = writer.addDimension(dim.first, dim.second.getSize());
+                    std::cout << "  Copied dimension: " << dim.first << " (size: " << dim.second.getSize() << ")" << std::endl;
+                }
+            }
+            
+            // Create 1D coordinate variables
+            auto uniqueLats = interpolator.getTargetUniqueLatitudes();
+            auto uniqueLons = interpolator.getTargetUniqueLongitudes();
+            
+            auto latVar = writer.addVariable("grid_yt", netCDF::ncDouble, {outputDims["grid_yt"]});
+            latVar.putAtt("units", "degrees_north");
+            latVar.putAtt("long_name", "T-cell latitude");
+            latVar.putAtt("cartesian_axis", "Y");
+            writer.writeVariableData("grid_yt", uniqueLats);
+            
+            auto lonVar = writer.addVariable("grid_xt", netCDF::ncDouble, {outputDims["grid_xt"]});
+            lonVar.putAtt("units", "degrees_east");
+            lonVar.putAtt("long_name", "T-cell longitude");
+            lonVar.putAtt("cartesian_axis", "X");
+            writer.writeVariableData("grid_xt", uniqueLons);
+            
+            std::cout << "  Created structured coordinate variables (grid_xt, grid_yt)" << std::endl;
+        } else {
+            std::cout << "Creating unstructured output grid (grid_points dimension)..." << std::endl;
+            std::cout << "  Note: Target grid is unstructured. For structured 2D output, use regular lat-lon" << std::endl;
+            std::cout << "        grids (L-type) or Gaussian grids (N, O, F types)." << std::endl;
+            
+            // Create a single grid_points dimension for unstructured output
+            outputDims["grid_points"] = writer.addDimension("grid_points", targetGridSize);
+            
+            // Copy non-spatial dimensions
+            for (const auto& dim : allDims) {
+                if (dim.first != latDimName && dim.first != lonDimName) {
+                    outputDims[dim.first] = writer.addDimension(dim.first, dim.second.getSize());
+                    std::cout << "  Copied dimension: " << dim.first << " (size: " << dim.second.getSize() << ")" << std::endl;
+                }
+            }
+            
+            // Create coordinate variables
+            auto latVar = writer.addVariable("lat", netCDF::ncDouble, {outputDims["grid_points"]});
+            latVar.putAtt("units", "degrees_north");
+            latVar.putAtt("long_name", "latitude");
+            latVar.putAtt("standard_name", "latitude");
+            writer.writeVariableData("lat", targetLats);
+            
+            auto lonVar = writer.addVariable("lon", netCDF::ncDouble, {outputDims["grid_points"]});
+            lonVar.putAtt("units", "degrees_east");
+            lonVar.putAtt("long_name", "longitude");
+            lonVar.putAtt("standard_name", "longitude");
+            writer.writeVariableData("lon", targetLons);
+            
+            std::cout << "  Created coordinate variables (lat, lon)" << std::endl;
+        }
+        
+        // Identify and interpolate variables
+        std::cout << "\n=== Interpolating Variables ===" << std::endl;
+        
+        std::vector<std::string> variablesToInterpolate;
+        
+        if (!specificVariable.empty()) {
+            // Only interpolate the specific variable
+            variablesToInterpolate.push_back(specificVariable);
+        } else {
+            // Find all variables with x,y or x,y,z dimensions
+            for (const auto& var : allVars) {
+                const std::string& varName = var.first;
+                
+                // Skip coordinate variables
+                if (varName == latDimName || varName == lonDimName || 
+                    varName == "lat" || varName == "lon" ||
+                    varName == "latitude" || varName == "longitude") {
+                    continue;
+                }
+                
+                auto dims = var.second.getDims();
+                
+                // Check if variable has x,y dimensions (2D or 3D with vertical)
+                bool hasLatDim = false;
+                bool hasLonDim = false;
+                
+                for (const auto& dim : dims) {
+                    if (dim.getName() == latDimName) hasLatDim = true;
+                    if (dim.getName() == lonDimName) hasLonDim = true;
+                }
+                
+                if (hasLatDim && hasLonDim) {
+                    variablesToInterpolate.push_back(varName);
+                }
+            }
+        }
+        
+        std::cout << "Variables to interpolate: " << variablesToInterpolate.size() << std::endl;
+        for (const auto& varName : variablesToInterpolate) {
+            std::cout << "  - " << varName << std::endl;
+        }
+        
+        // Interpolate each variable
+        for (const auto& varName : variablesToInterpolate) {
+            std::cout << "\n--- Interpolating variable: " << varName << " ---" << std::endl;
+            
+            auto sourceVar = reader.getVariable(varName);
+            auto sourceDims = sourceVar.getDims();
+            
+            // Build output dimensions for this variable
+            std::vector<netCDF::NcDim> outDims;
+            std::vector<size_t> extraDimSizes;
+            
+            for (const auto& dim : sourceDims) {
+                if (dim.getName() == latDimName || dim.getName() == lonDimName) {
+                    // Replace with output spatial dimensions
+                    if (isStructuredOutput) {
+                        // Use grid_yt and grid_xt for structured output
+                        if (outDims.empty() || (outDims.back().getName() != "grid_yt" && outDims.back().getName() != "grid_xt")) {
+                            outDims.push_back(outputDims["grid_yt"]);
+                            outDims.push_back(outputDims["grid_xt"]);
+                        }
+                    } else {
+                        // Use grid_points for unstructured output (only add once)
+                        if (outDims.empty() || outDims.back().getName() != "grid_points") {
+                            outDims.push_back(outputDims["grid_points"]);
+                        }
+                    }
+                } else {
+                    // Keep other dimensions
+                    outDims.push_back(outputDims[dim.getName()]);
+                    extraDimSizes.push_back(dim.getSize());
+                }
+            }
+            
+            // Create variable in output file
+            auto outputVar = writer.addVariable(varName, sourceVar.getType(), outDims);
+            writer.copyVariableAttributes(sourceVar, varName);
+            
+            // Read and interpolate data
+            if (extraDimSizes.empty()) {
+                // Simple 2D variable
+                auto sourceData = reader.readVariable(varName);
+                auto interpolatedData = interpolator.interpolate(sourceData);
+                
+                // Reshape if structured output
+                if (isStructuredOutput) {
+                    interpolatedData = interpolator.reshape1DTo2D(interpolatedData);
+                }
+                
+                writer.writeVariableData(varName, interpolatedData);
+            } else {
+                // 3D or higher dimensional variable - interpolate each 2D slice
+                std::cout << "  Interpolating multi-dimensional variable..." << std::endl;
+                
+                // Calculate total size and slice sizes
+                size_t totalSourceSize = 1;
+                for (const auto& dim : sourceDims) {
+                    totalSourceSize *= dim.getSize();
+                }
+                
+                size_t sourceSliceSize = lats.size() * lons.size();
+                size_t numSlices = totalSourceSize / sourceSliceSize;
+                
+                std::cout << "  Number of 2D slices: " << numSlices << std::endl;
+                
+                // Read all data
+                auto allData = reader.readVariable(varName);
+                
+                // Interpolate each slice
+                std::vector<double> allInterpolatedData;
+                allInterpolatedData.reserve(numSlices * targetGridSize);
+                
+                // Allocate sliceData once and reuse for all slices
+                std::vector<float> sliceData(sourceSliceSize);
+                
+                for (size_t slice = 0; slice < numSlices; ++slice) {
+                    size_t offset = slice * sourceSliceSize;
+                    std::copy(allData.begin() + offset, 
+                              allData.begin() + offset + sourceSliceSize,
+                              sliceData.begin());
+                    
+                    auto interpolatedSlice = interpolator.interpolate(sliceData);
+                    
+                    // Reshape if structured output
+                    if (isStructuredOutput) {
+                        interpolatedSlice = interpolator.reshape1DTo2D(interpolatedSlice);
+                    }
+                    
+                    allInterpolatedData.insert(allInterpolatedData.end(),
+                                               interpolatedSlice.begin(),
+                                               interpolatedSlice.end());
+                }
+                
+                writer.writeVariableData(varName, allInterpolatedData);
+                std::cout << "  Wrote " << allInterpolatedData.size() << " interpolated values" << std::endl;
+            }
+        }
         
         std::cout << "\n=== SUCCESS ===" << std::endl;
-        std::cout << "Successfully interpolated " << data.size() 
-                  << " source points to " << interpolatedData.size() 
-                  << " target points" << std::endl;
+        std::cout << "Successfully interpolated " << variablesToInterpolate.size() 
+                  << " variable(s) from " << inputFile << std::endl;
+        std::cout << "Output written to: " << outputFile << std::endl;
         
+        atlas::Library::instance().finalise();
         return 0;
         
     } catch (const std::exception& e) {
         std::cerr << "\nError: " << e.what() << std::endl;
+        atlas::Library::instance().finalise();
         return 1;
     }
 }
