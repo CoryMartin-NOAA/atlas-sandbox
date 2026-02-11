@@ -36,8 +36,16 @@ if(NOT NetCDF_FOUND)
         # Manual detection using environment variables
         if(DEFINED ENV{netcdf_cxx4_ROOT})
             set(NETCDF_CXX_INCLUDE_DIR "$ENV{netcdf_cxx4_ROOT}/include")
-            set(NETCDF_CXX_LIBRARY "$ENV{netcdf_cxx4_ROOT}/lib/libnetcdf_c++4.so")
-            if(EXISTS "${NETCDF_CXX_INCLUDE_DIR}" AND EXISTS "${NETCDF_CXX_LIBRARY}")
+            
+            # Try to find the library with platform-independent search
+            find_library(NETCDF_CXX_LIBRARY
+                NAMES netcdf_c++4 netcdf-cxx4
+                HINTS $ENV{netcdf_cxx4_ROOT}
+                PATH_SUFFIXES lib lib64 lib/x86_64-linux-gnu
+                NO_DEFAULT_PATH
+            )
+            
+            if(NETCDF_CXX_LIBRARY AND EXISTS "${NETCDF_CXX_INCLUDE_DIR}")
                 set(NetCDF_FOUND TRUE)
                 add_library(NetCDF::NetCDF_CXX INTERFACE IMPORTED)
                 target_include_directories(NetCDF::NetCDF_CXX INTERFACE ${NETCDF_CXX_INCLUDE_DIR})
