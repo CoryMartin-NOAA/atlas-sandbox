@@ -13,6 +13,7 @@
 #include "atlas/array.h"
 #include "atlas/interpolation.h"
 #include "atlas/option.h"
+#include "atlas/library/Library.h"
 #include "eckit/log/Log.h"
 
 using namespace atlas;
@@ -517,11 +518,15 @@ void printUsage(const char* progName) {
 }
 
 int main(int argc, char* argv[]) {
+    // Initialize Atlas library
+    atlas::Library::instance().initialise(argc, argv);
+    
     std::cout << "=== Atlas NetCDF Interpolation Example ===" << std::endl;
     
     // Parse command line arguments
     if (argc < 4) {
         printUsage(argv[0]);
+        atlas::Library::instance().finalise();
         return 1;
     }
     
@@ -551,6 +556,7 @@ int main(int argc, char* argv[]) {
         
         if (lats.empty() || lons.empty()) {
             std::cerr << "Error: Could not read coordinates from NetCDF file" << std::endl;
+            atlas::Library::instance().finalise();
             return 1;
         }
         
@@ -734,10 +740,12 @@ int main(int argc, char* argv[]) {
                   << " variable(s) from " << inputFile << std::endl;
         std::cout << "Output written to: " << outputFile << std::endl;
         
+        atlas::Library::instance().finalise();
         return 0;
         
     } catch (const std::exception& e) {
         std::cerr << "\nError: " << e.what() << std::endl;
+        atlas::Library::instance().finalise();
         return 1;
     }
 }
