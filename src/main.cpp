@@ -340,6 +340,15 @@ public:
         std::cout << "Creating target grid: " << targetGridSpec << std::endl;
         targetGrid_ = Grid(targetGridSpec);
         
+        // Check for reduced Gaussian grids and warn user
+        if (isTargetGridReducedGaussian()) {
+            std::cerr << "\n*** WARNING: Reduced Gaussian grid detected (e.g., N96, O96) ***" << std::endl;
+            std::cerr << "Reduced Gaussian grids have variable numbers of longitude points per latitude." << std::endl;
+            std::cerr << "This can cause issues with 2D structured output and may produce unrealistic results." << std::endl;
+            std::cerr << "RECOMMENDATION: Use regular Gaussian grids instead (F-type, e.g., F96)." << std::endl;
+            std::cerr << "Regular Gaussian grids have uniform longitude spacing and work better with structured output.\n" << std::endl;
+        }
+        
         // Create meshes and function spaces
         std::cout << "Generating source mesh..." << std::endl;
         sourceMesh_ = MeshGenerator("structured").generate(sourceGrid_);
@@ -444,6 +453,28 @@ public:
         try {
             auto grid = StructuredGrid(targetGrid_);
             return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    bool isTargetGridReducedGaussian() const {
+        // Check if target grid is a reduced Gaussian grid (variable number of points per latitude)
+        if (!isTargetGridStructured()) return false;
+        
+        try {
+            auto grid = StructuredGrid(targetGrid_);
+            
+            // Check if different latitudes have different numbers of longitudes
+            if (grid.ny() < 2) return false;
+            
+            idx_t firstNx = grid.nx(0);
+            for (idx_t j = 1; j < grid.ny(); ++j) {
+                if (grid.nx(j) != firstNx) {
+                    return true;  // Found different nx values - this is reduced
+                }
+            }
+            return false;  // All nx values are the same - regular grid
         } catch (...) {
             return false;
         }

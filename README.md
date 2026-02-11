@@ -70,18 +70,37 @@ make
 
 - `netcdf_file`: Path to the input NetCDF file
 - `target_grid`: Target grid specification
-  - `O32`: Octahedral reduced Gaussian grid with 32 latitude lines
-  - `N32`: Regular Gaussian grid with 32 latitude lines
-  - `L360x181`: Regular lat-lon grid with 360 longitudes and 181 latitudes
+  - **Regular lat-lon grids** (recommended for structured output):
+    - `L360x181`: Regular lat-lon grid with 360 longitudes and 181 latitudes
+    - `L720x361`: Higher resolution regular lat-lon grid
+  - **Regular Gaussian grids** (F-type, recommended):
+    - `F96`: Regular Gaussian grid with uniform longitude spacing
+    - `F48`: Regular Gaussian grid (lower resolution)
+  - **Reduced Gaussian grids** (N-type, O-type - may produce unrealistic results with 2D output):
+    - `N96`: Reduced Gaussian grid (variable longitude points per latitude)
+    - `O32`: Octahedral reduced Gaussian grid
+    - ⚠️ **WARNING**: Reduced grids can cause issues with structured 2D output. Use F-type grids instead.
 - `output_file`: Path to the output NetCDF file where interpolated data will be written
 - `variable_name`: (Optional) Specific variable to interpolate. If not provided, all x,y and x,y,z variables will be interpolated
 
+### Grid Type Recommendations
+
+For best results with structured 2D output (maintaining `time, pfull, grid_yt, grid_xt` dimensions):
+- ✅ **Use**: Regular lat-lon grids (`L360x181`) or regular Gaussian grids (`F96`)
+- ⚠️ **Avoid**: Reduced Gaussian grids (`N96`, `O32`) - these have variable longitude points per latitude and can produce unrealistic interpolated values when reshaped to 2D
+
 ### Examples
 
-Interpolate all variables from a GDAS file to an O32 grid:
+Interpolate all variables from a GDAS file to a regular Gaussian grid (F96):
 
 ```bash
-./build/atlas_interpolate gdas.t00z.atmf006.nc O32 gdas_interpolated.nc
+./build/atlas_interpolate gdas.t00z.atmf006.nc F96 gdas_interpolated.nc
+```
+
+Interpolate all variables to a regular lat-lon grid:
+
+```bash
+./build/atlas_interpolate gdas.t00z.atmf006.nc L360x181 gdas_interpolated.nc
 ```
 
 Interpolate only temperature to a 1-degree lat-lon grid:
