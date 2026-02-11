@@ -1,0 +1,12 @@
+{
+  "name": "Atlas Sandbox - JCSDA GNU dev codespace",
+  "image": "jcsda/docker-gnu-openmpi-dev:skylab-v8",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools"
+      ]
+    }
+  }
+}
