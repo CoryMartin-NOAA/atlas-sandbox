@@ -647,7 +647,7 @@ int main(int argc, char* argv[]) {
             for (const auto& dim : sourceDims) {
                 if (dim.getName() == latDimName || dim.getName() == lonDimName) {
                     // Replace with grid_points dimension (only add once)
-                    if (outDims.empty() || outDims[outDims.size()-1].getName() != "grid_points") {
+                    if (outDims.empty() || outDims.back().getName() != "grid_points") {
                         outDims.push_back(outputDims["grid_points"]);
                     }
                 } else {
