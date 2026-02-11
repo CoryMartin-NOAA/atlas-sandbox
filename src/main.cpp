@@ -689,8 +689,10 @@ int main(int argc, char* argv[]) {
                 std::vector<double> allInterpolatedData;
                 allInterpolatedData.reserve(numSlices * targetGridSize);
                 
+                // Allocate sliceData once and reuse for all slices
+                std::vector<float> sliceData(sourceSliceSize);
+                
                 for (size_t slice = 0; slice < numSlices; ++slice) {
-                    std::vector<float> sliceData(sourceSliceSize);
                     size_t offset = slice * sourceSliceSize;
                     std::copy(allData.begin() + offset, 
                               allData.begin() + offset + sourceSliceSize,
