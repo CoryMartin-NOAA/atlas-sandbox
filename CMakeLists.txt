@@ -37,15 +37,15 @@ if(NOT NetCDF_FOUND)
         if(DEFINED ENV{netcdf_cxx4_ROOT})
             # Try to find the include directory with header validation
             find_path(NETCDF_CXX_INCLUDE_DIR
-                NAMES ncVar.h netcdf
+                NAMES ncVar.h
                 HINTS $ENV{netcdf_cxx4_ROOT}
-                PATH_SUFFIXES include
+                PATH_SUFFIXES include include/netcdf
                 NO_DEFAULT_PATH
             )
             
             # Try to find the library with platform-independent search
             find_library(NETCDF_CXX_LIBRARY
-                NAMES netcdf_c++4 netcdf-cxx4
+                NAMES netcdf-cxx4 netcdf_c++4
                 HINTS $ENV{netcdf_cxx4_ROOT}
                 PATH_SUFFIXES lib lib64 lib/x86_64-linux-gnu Library/lib bin
                 NO_DEFAULT_PATH
