@@ -6,8 +6,10 @@
 #include <map>
 #include <set>
 #include <algorithm>
+#include <limits>
 #include <netcdf>
 #include "atlas/grid.h"
+#include "atlas/grid/StructuredGrid.h"
 #include "atlas/mesh.h"
 #include "atlas/meshgenerator.h"
 #include "atlas/functionspace.h"
@@ -433,23 +435,56 @@ public:
         return targetGrid_.name()[0] == 'L';
     }
 
+    bool isTargetGridStructured() const {
+        // Check if target grid is structured (has 2D lat-lon structure)
+        // This includes regular lat-lon (L), Gaussian (N, O, F), and reduced Gaussian grids
+        if (!targetGrid_) return false;
+        
+        // Try to get the grid as a structured grid
+        try {
+            auto grid = StructuredGrid(targetGrid_);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
     std::pair<size_t, size_t> getTargetGridDimensions() const {
         // For regular lat-lon grids, extract nlon and nlat from grid spec
         // Grid spec format: "L<nlon>x<nlat>"
-        if (!isTargetGridRegularLatLon()) {
-            return {0, 0};
+        if (isTargetGridRegularLatLon()) {
+            std::string gridName = targetGrid_.name();
+            size_t xPos = gridName.find('x');
+            if (xPos == std::string::npos) {
+                return {0, 0};
+            }
+            
+            size_t nlon = std::stoul(gridName.substr(1, xPos - 1));
+            size_t nlat = std::stoul(gridName.substr(xPos + 1));
+            
+            return {nlon, nlat};
         }
         
-        std::string gridName = targetGrid_.name();
-        size_t xPos = gridName.find('x');
-        if (xPos == std::string::npos) {
-            return {0, 0};
+        // For other structured grids (Gaussian, etc.), use Atlas grid properties
+        if (isTargetGridStructured()) {
+            try {
+                auto grid = StructuredGrid(targetGrid_);
+                size_t nlat = grid.ny();
+                
+                // For regular grids, all latitudes have same number of longitudes
+                // For reduced grids, we'll use the maximum
+                size_t nlon = 0;
+                for (idx_t j = 0; j < grid.ny(); ++j) {
+                    nlon = std::max(nlon, static_cast<size_t>(grid.nx(j)));
+                }
+                
+                return {nlon, nlat};
+            } catch (...) {
+                return {0, 0};
+            }
         }
         
-        size_t nlon = std::stoul(gridName.substr(1, xPos - 1));
-        size_t nlat = std::stoul(gridName.substr(xPos + 1));
-        
-        return {nlon, nlat};
+        return {0, 0};
     }
 
     std::vector<double> getTargetUniqueLatitudes() const {
@@ -474,36 +509,59 @@ public:
 
     std::vector<double> reshape1DTo2D(const std::vector<double>& data1D) const {
         // Reshape 1D unstructured data to 2D structured format
-        // This assumes the data is in row-major order (lon varies fastest)
-        if (!isTargetGridRegularLatLon()) {
+        // Works for any structured grid (regular lat-lon, Gaussian, etc.)
+        if (!isTargetGridStructured()) {
             return data1D; // Return as-is if not structured
         }
         
         auto [nlon, nlat] = getTargetGridDimensions();
-        std::vector<double> data2D(data1D.size());
+        if (nlon == 0 || nlat == 0) {
+            return data1D; // Can't reshape if dimensions unknown
+        }
+        
+        std::vector<double> data2D(nlon * nlat, std::numeric_limits<double>::quiet_NaN());
         
         // Get the mapping from unstructured to structured indices
         auto lonlat = array::make_view<double, 2>(targetMesh_.nodes().lonlat());
         
-        // For regular lat-lon grids, we need to reorder from Atlas's ordering
+        // For structured grids, we need to reorder from Atlas's ordering
         // to row-major (lat, lon) ordering
         auto uniqueLats = getTargetUniqueLatitudes();
         auto uniqueLons = getTargetUniqueLongitudes();
+        
+        // For efficiency, use tolerance for floating point comparison
+        const double tol = 1e-10;
         
         for (idx_t i = 0; i < lonlat.shape(0); ++i) {
             double lon = lonlat(i, 0);
             double lat = lonlat(i, 1);
             
-            // Find indices
-            auto latIt = std::find(uniqueLats.begin(), uniqueLats.end(), lat);
-            auto lonIt = std::find(uniqueLons.begin(), uniqueLons.end(), lon);
+            // Find indices with tolerance
+            size_t latIdx = 0;
+            size_t lonIdx = 0;
+            bool foundLat = false;
+            bool foundLon = false;
             
-            if (latIt != uniqueLats.end() && lonIt != uniqueLons.end()) {
-                size_t latIdx = std::distance(uniqueLats.begin(), latIt);
-                size_t lonIdx = std::distance(uniqueLons.begin(), lonIt);
+            for (size_t j = 0; j < uniqueLats.size(); ++j) {
+                if (std::abs(lat - uniqueLats[j]) < tol) {
+                    latIdx = j;
+                    foundLat = true;
+                    break;
+                }
+            }
+            
+            for (size_t j = 0; j < uniqueLons.size(); ++j) {
+                if (std::abs(lon - uniqueLons[j]) < tol) {
+                    lonIdx = j;
+                    foundLon = true;
+                    break;
+                }
+            }
+            
+            if (foundLat && foundLon) {
                 size_t idx2D = latIdx * nlon + lonIdx;
                 
-                if (idx2D < data2D.size()) {
+                if (idx2D < data2D.size() && i < static_cast<idx_t>(data1D.size())) {
                     data2D[idx2D] = data1D[i];
                 }
             }
@@ -676,11 +734,11 @@ int main(int argc, char* argv[]) {
         // Create dimensions in output file
         std::map<std::string, netCDF::NcDim> outputDims;
         
-        // Check if target grid is regular lat-lon for structured output
-        bool isStructuredOutput = interpolator.isTargetGridRegularLatLon();
+        // Check if target grid is structured for 2D output
+        bool isStructuredOutput = interpolator.isTargetGridStructured();
         
         if (isStructuredOutput) {
-            std::cout << "Creating structured output grid..." << std::endl;
+            std::cout << "Creating structured 2D output grid..." << std::endl;
             
             // Get target grid dimensions
             auto [nlon, nlat] = interpolator.getTargetGridDimensions();
@@ -717,7 +775,8 @@ int main(int argc, char* argv[]) {
             std::cout << "  Created structured coordinate variables (grid_xt, grid_yt)" << std::endl;
         } else {
             std::cout << "Creating unstructured output grid (grid_points dimension)..." << std::endl;
-            std::cout << "  Note: For structured output, use a regular lat-lon target grid (e.g., L360x181)" << std::endl;
+            std::cout << "  Note: Target grid is unstructured. For structured 2D output, use regular lat-lon" << std::endl;
+            std::cout << "        grids (L-type) or Gaussian grids (N, O, F types)." << std::endl;
             
             // Create a single grid_points dimension for unstructured output
             outputDims["grid_points"] = writer.addDimension("grid_points", targetGridSize);
