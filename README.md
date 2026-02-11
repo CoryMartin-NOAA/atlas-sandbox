@@ -17,6 +17,8 @@ This project provides example code that:
   - Octahedral reduced Gaussian grids (O<n>)
   - Regular Gaussian grids (N<n>)
   - Regular lat-lon grids (L<nx>x<ny>)
+- **NetCDF Output**: Write interpolated data to NetCDF files with preserved metadata
+- **Batch Processing**: Automatically interpolate all x,y and x,y,z fields in a file
 
 ## Prerequisites
 
@@ -61,7 +63,7 @@ make
 ## Usage
 
 ```bash
-./build/atlas_interpolate <netcdf_file> <target_grid> [variable_name]
+./build/atlas_interpolate <netcdf_file> <target_grid> <output_file> [variable_name]
 ```
 
 ### Arguments
@@ -71,14 +73,21 @@ make
   - `O32`: Octahedral reduced Gaussian grid with 32 latitude lines
   - `N32`: Regular Gaussian grid with 32 latitude lines
   - `L360x181`: Regular lat-lon grid with 360 longitudes and 181 latitudes
-- `variable_name`: (Optional) Variable to interpolate (default: 'tmp')
+- `output_file`: Path to the output NetCDF file where interpolated data will be written
+- `variable_name`: (Optional) Specific variable to interpolate. If not provided, all x,y and x,y,z variables will be interpolated
 
-### Example
+### Examples
 
-Interpolate temperature from a GDAS file to an O32 grid:
+Interpolate all variables from a GDAS file to an O32 grid:
 
 ```bash
-./build/atlas_interpolate gdas.t00z.atmf006.nc O32 tmp
+./build/atlas_interpolate gdas.t00z.atmf006.nc O32 gdas_interpolated.nc
+```
+
+Interpolate only temperature to a 1-degree lat-lon grid:
+
+```bash
+./build/atlas_interpolate gdas.t00z.atmf006.nc L360x181 output.nc tmp
 ```
 
 ### Sample Data
@@ -112,8 +121,10 @@ atlas-sandbox/
 3. **Create Target Grid**: Creates the target grid based on the user specification
 4. **Generate Meshes**: Generates meshes for both source and target grids
 5. **Setup Interpolation**: Configures the interpolation scheme (structured linear 2D)
-6. **Execute Interpolation**: Performs the interpolation from source to target grid
-7. **Output Results**: Displays statistics and confirms successful interpolation
+6. **Identify Variables**: Automatically identifies all variables with x,y or x,y,z dimensions (unless a specific variable is requested)
+7. **Execute Interpolation**: Performs the interpolation from source to target grid for each variable
+8. **Write Output**: Creates a new NetCDF file with interpolated data, preserving metadata and adding interpolation history
+9. **Output Results**: Displays statistics and confirms successful interpolation
 
 ## References
 

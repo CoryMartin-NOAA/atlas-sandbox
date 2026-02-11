@@ -40,14 +40,15 @@ def download_gdas_file(date_str, cycle, forecast_hour, output_dir="."):
         print(f"✗ Download failed: {e}")
         return None
 
-def run_interpolation(netcdf_file, target_grid, variable="tmp"):
+def run_interpolation(netcdf_file, target_grid, output_file, variable=None):
     """
     Run the atlas_interpolate program
     
     Args:
         netcdf_file: Path to NetCDF file
         target_grid: Target grid specification (e.g., 'O32', 'N32', 'L360x181')
-        variable: Variable name to interpolate
+        output_file: Path to output NetCDF file
+        variable: Optional variable name to interpolate (default: all x,y and x,y,z variables)
     """
     exe_path = "./build/atlas_interpolate"
     
@@ -59,10 +60,16 @@ def run_interpolation(netcdf_file, target_grid, variable="tmp"):
     print(f"\nRunning interpolation:")
     print(f"  Input: {netcdf_file}")
     print(f"  Target grid: {target_grid}")
-    print(f"  Variable: {variable}")
+    print(f"  Output: {output_file}")
+    if variable:
+        print(f"  Variable: {variable}")
+    else:
+        print(f"  Mode: Interpolate all x,y and x,y,z variables")
     print()
     
-    cmd = [exe_path, netcdf_file, target_grid, variable]
+    cmd = [exe_path, netcdf_file, target_grid, output_file]
+    if variable:
+        cmd.append(variable)
     
     try:
         subprocess.run(cmd, check=True)
@@ -108,23 +115,23 @@ def main():
             print("  https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/")
             print()
             print("Then run:")
-            print(f"  ./build/atlas_interpolate <your_file.nc> O32 tmp")
+            print(f"  ./build/atlas_interpolate <your_file.nc> O32 output.nc")
             return 1
     
     # Example 1: Interpolate to O32 grid (Octahedral reduced Gaussian)
     print("\n" + "="*60)
-    print("Example 1: Interpolate to O32 (Octahedral Gaussian grid)")
+    print("Example 1: Interpolate all variables to O32 (Octahedral Gaussian grid)")
     print("="*60)
-    success = run_interpolation(netcdf_file, "O32", "tmp")
+    success = run_interpolation(netcdf_file, "O32", "gdas_o32.nc")
     
     if not success:
         return 1
     
     # Example 2: Interpolate to a regular lat-lon grid
     print("\n" + "="*60)
-    print("Example 2: Interpolate to L360x181 (1-degree lat-lon grid)")
+    print("Example 2: Interpolate only temperature to L360x181 (1-degree lat-lon grid)")
     print("="*60)
-    success = run_interpolation(netcdf_file, "L360x181", "tmp")
+    success = run_interpolation(netcdf_file, "L360x181", "gdas_latlon.nc", "tmp")
     
     if not success:
         return 1
