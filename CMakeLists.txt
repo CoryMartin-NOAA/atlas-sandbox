@@ -11,6 +11,7 @@ find_package(atlas REQUIRED)
 
 # Handle NetCDF with support for netcdf_c_ROOT and netcdf_cxx4_ROOT environment variables
 # These are commonly used in JCSDA environments
+# Append to CMAKE_PREFIX_PATH to help find_package locate NetCDF
 if(DEFINED ENV{netcdf_c_ROOT})
     list(APPEND CMAKE_PREFIX_PATH $ENV{netcdf_c_ROOT})
 endif()
@@ -23,7 +24,7 @@ find_package(NetCDF QUIET CONFIG COMPONENTS CXX)
 
 # If not found, try with module mode or manual detection
 if(NOT NetCDF_FOUND)
-    # Try to find netcdf-cxx4 directly
+    # Try to find netcdf-cxx4 directly (note: different casing used by different distributions)
     find_package(netCDF QUIET CONFIG)
     if(netCDF_FOUND)
         set(NetCDF_FOUND TRUE)
