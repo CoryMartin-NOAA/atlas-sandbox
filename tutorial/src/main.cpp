@@ -366,33 +366,7 @@ int main(int argc, char* argv[]) {
         atlas::Library::instance().finalise();
         return 1;
     }
-    
-    // Check latitude ordering in input file
-    std::cout << "Input NetCDF latitude ordering check:" << std::endl;
-    std::cout << "  First few latitudes: ";
-    for (size_t i = 0; i < std::min(size_t(5), lats.size()); ++i) {
-        std::cout << lats[i] << " ";
-    }
-    std::cout << std::endl;
-    std::cout << "  Last few latitudes: ";
-    size_t start = std::max(size_t(0), lats.size() - 5);
-    for (size_t i = start; i < lats.size(); ++i) {
-        std::cout << lats[i] << " ";
-    }
-    std::cout << std::endl;
-    
-    // Check if latitudes are in descending order (north to south)
-    bool isNorthToSouth = lats.size() > 1 && lats[0] > lats[lats.size()-1];
-    std::cout << "  Latitude ordering: " << (isNorthToSouth ? "North-to-South" : "South-to-North") << std::endl;
-    
-    // Atlas typically expects latitudes in ascending order (south to north)
-    // If NetCDF has north-to-south, we need to flip the latitude indexing
-    bool needLatFlip = isNorthToSouth;
-    if (needLatFlip) {
-        std::cout << "  WARNING: NetCDF latitudes are North-to-South, but Atlas expects South-to-North" << std::endl;
-        std::cout << "  Will apply latitude flipping when copying data to Atlas field" << std::endl;
-    }
-    
+
     std::string latDimName = reader.getLatitudeDimName();
     std::string lonDimName = reader.getLongitudeDimName();
     
@@ -510,7 +484,7 @@ int main(int argc, char* argv[]) {
                 }
             }
             
-            // Copy data accounting for [time, level, lat, lon] ordering and latitude flipping
+            // Copy data accounting for [time, level, lat, lon] ordering
             for (size_t level = 0; level < numLevels; ++level) {
                 for (size_t lat = 0; lat < latSize; ++lat) {
                     for (size_t lon = 0; lon < lonSize; ++lon) {
@@ -518,10 +492,7 @@ int main(int argc, char* argv[]) {
                                            level * (latSize * lonSize) + 
                                            lat * lonSize + 
                                            lon;
-                        
-                        // Apply latitude flipping if needed (NetCDF N->S to Atlas S->N)
-                        size_t atlasLat = needLatFlip ? (latSize - 1 - lat) : lat;
-                        size_t atlasIndex = atlasLat * lonSize + lon; // atlas spatial index
+                        size_t atlasIndex = lat * lonSize + lon; // atlas spatial index
                         
                         if (netcdfIndex < tempData.size() && atlasIndex < spatialSize) {
                             tempView(atlasIndex, level) = tempData[netcdfIndex];
@@ -532,39 +503,8 @@ int main(int argc, char* argv[]) {
         } else {
             // 2D field: use 1D view (just nodes)
             auto tempView = atlas::array::make_view<float, 1>(tempField);
-            
-            // For 2D data, we need to find lat and lon dimensions to handle flipping
-            size_t latSize = 0, lonSize = 0;
-            for (const auto& dim : tempDims) {
-                if (dim.getName() == latDimName) {
-                    latSize = dim.getSize();
-                } else if (dim.getName() == lonDimName) {
-                    lonSize = dim.getSize();
-                }
-            }
-            
-            if (latSize > 0 && lonSize > 0 && latSize * lonSize == tempData.size()) {
-                // Data is structured as [lat, lon] - apply latitude flipping
-                std::cout << "2D data structure: lat(" << latSize << ") x lon(" << lonSize << ")" << std::endl;
-                for (size_t lat = 0; lat < latSize; ++lat) {
-                    for (size_t lon = 0; lon < lonSize; ++lon) {
-                        size_t netcdfIndex = lat * lonSize + lon;
-                        
-                        // Apply latitude flipping if needed
-                        size_t atlasLat = needLatFlip ? (latSize - 1 - lat) : lat;
-                        size_t atlasIndex = atlasLat * lonSize + lon;
-                        
-                        if (netcdfIndex < tempData.size() && atlasIndex < spatialSize) {
-                            tempView(atlasIndex) = tempData[netcdfIndex];
-                        }
-                    }
-                }
-            } else {
-                // Fallback: copy data as-is (may not be structured in lat-lon order)
-                std::cout << "Warning: Cannot determine 2D data structure, copying as-is" << std::endl;
-                for (size_t i = 0; i < spatialSize && i < tempData.size(); ++i) {
-                    tempView(i) = tempData[i];
-                }
+            for (size_t i = 0; i < spatialSize && i < tempData.size(); ++i) {
+                tempView(i) = tempData[i];
             }
         }
         
@@ -665,7 +605,7 @@ int main(int argc, char* argv[]) {
         }
         if (lat >= -45.0 && lat <= -30.0 && (lon >= 300.0)) {
             for (size_t level = 0; level < numLevels; ++level) {
-                tempView(i, level) = 377.6f;
+                tempView(i, level) = 277.6f;
             }
         }
     }
@@ -759,6 +699,9 @@ int main(int argc, char* argv[]) {
     targetLats.assign(uniqueLats.begin(), uniqueLats.end());
     std::sort(targetLons.begin(), targetLons.end());
     std::sort(targetLats.begin(), targetLats.end());
+    
+    // Flip latitude order to north-to-south (descending)
+    std::reverse(targetLats.begin(), targetLats.end());
     
     std::cout << "Target grid dimensions: " << targetLons.size() << " longitudes x " 
               << targetLats.size() << " latitudes" << std::endl;
