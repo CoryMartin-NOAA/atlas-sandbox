@@ -340,7 +340,7 @@ int main(int argc, char* argv[]) {
     // Initialize Atlas library
     atlas::Library::instance().initialise(argc, argv);
     
-    std::cout << "=== Atlas NetCDF Interpolation Example ===" << std::endl;
+    std::cout << "=== Atlas NetCDF Calculation and Interpolation Example ===" << std::endl;
     
     // Parse command line arguments
     if (argc < 4) {
@@ -367,6 +367,32 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
+    // Check latitude ordering in input file
+    std::cout << "Input NetCDF latitude ordering check:" << std::endl;
+    std::cout << "  First few latitudes: ";
+    for (size_t i = 0; i < std::min(size_t(5), lats.size()); ++i) {
+        std::cout << lats[i] << " ";
+    }
+    std::cout << std::endl;
+    std::cout << "  Last few latitudes: ";
+    size_t start = std::max(size_t(0), lats.size() - 5);
+    for (size_t i = start; i < lats.size(); ++i) {
+        std::cout << lats[i] << " ";
+    }
+    std::cout << std::endl;
+    
+    // Check if latitudes are in descending order (north to south)
+    bool isNorthToSouth = lats.size() > 1 && lats[0] > lats[lats.size()-1];
+    std::cout << "  Latitude ordering: " << (isNorthToSouth ? "North-to-South" : "South-to-North") << std::endl;
+    
+    // Atlas typically expects latitudes in ascending order (south to north)
+    // If NetCDF has north-to-south, we need to flip the latitude indexing
+    bool needLatFlip = isNorthToSouth;
+    if (needLatFlip) {
+        std::cout << "  WARNING: NetCDF latitudes are North-to-South, but Atlas expects South-to-North" << std::endl;
+        std::cout << "  Will apply latitude flipping when copying data to Atlas field" << std::endl;
+    }
+    
     std::string latDimName = reader.getLatitudeDimName();
     std::string lonDimName = reader.getLongitudeDimName();
     
@@ -382,8 +408,8 @@ int main(int argc, char* argv[]) {
 
     // create an atlas functionspace
     std::string atlasInputGridName;
-    // Create a regular lat-lon grid specification based on actual grid dimensions
-    atlasInputGridName = "L" + std::to_string(lons.size()) + "x" + std::to_string(lats.size());
+    // Create a regular Gaussian grid specification based on actual grid dimensions
+    atlasInputGridName = "F" + std::to_string(lats.size() / 2);
     std::cout << "Using input grid specification: " << atlasInputGridName << std::endl;
     const atlas::Grid gridInput(atlasInputGridName);
     eckit::LocalConfiguration atlas_conf;
@@ -484,7 +510,7 @@ int main(int argc, char* argv[]) {
                 }
             }
             
-            // Copy data accounting for [time, level, lat, lon] ordering
+            // Copy data accounting for [time, level, lat, lon] ordering and latitude flipping
             for (size_t level = 0; level < numLevels; ++level) {
                 for (size_t lat = 0; lat < latSize; ++lat) {
                     for (size_t lon = 0; lon < lonSize; ++lon) {
@@ -492,7 +518,10 @@ int main(int argc, char* argv[]) {
                                            level * (latSize * lonSize) + 
                                            lat * lonSize + 
                                            lon;
-                        size_t atlasIndex = lat * lonSize + lon; // atlas spatial index
+                        
+                        // Apply latitude flipping if needed (NetCDF N->S to Atlas S->N)
+                        size_t atlasLat = needLatFlip ? (latSize - 1 - lat) : lat;
+                        size_t atlasIndex = atlasLat * lonSize + lon; // atlas spatial index
                         
                         if (netcdfIndex < tempData.size() && atlasIndex < spatialSize) {
                             tempView(atlasIndex, level) = tempData[netcdfIndex];
@@ -504,9 +533,38 @@ int main(int argc, char* argv[]) {
             // 2D field: use 1D view (just nodes)
             auto tempView = atlas::array::make_view<float, 1>(tempField);
             
-            // Copy data from NetCDF format to Atlas field format
-            for (size_t i = 0; i < spatialSize && i < tempData.size(); ++i) {
-                tempView(i) = tempData[i];
+            // For 2D data, we need to find lat and lon dimensions to handle flipping
+            size_t latSize = 0, lonSize = 0;
+            for (const auto& dim : tempDims) {
+                if (dim.getName() == latDimName) {
+                    latSize = dim.getSize();
+                } else if (dim.getName() == lonDimName) {
+                    lonSize = dim.getSize();
+                }
+            }
+            
+            if (latSize > 0 && lonSize > 0 && latSize * lonSize == tempData.size()) {
+                // Data is structured as [lat, lon] - apply latitude flipping
+                std::cout << "2D data structure: lat(" << latSize << ") x lon(" << lonSize << ")" << std::endl;
+                for (size_t lat = 0; lat < latSize; ++lat) {
+                    for (size_t lon = 0; lon < lonSize; ++lon) {
+                        size_t netcdfIndex = lat * lonSize + lon;
+                        
+                        // Apply latitude flipping if needed
+                        size_t atlasLat = needLatFlip ? (latSize - 1 - lat) : lat;
+                        size_t atlasIndex = atlasLat * lonSize + lon;
+                        
+                        if (netcdfIndex < tempData.size() && atlasIndex < spatialSize) {
+                            tempView(atlasIndex) = tempData[netcdfIndex];
+                        }
+                    }
+                }
+            } else {
+                // Fallback: copy data as-is (may not be structured in lat-lon order)
+                std::cout << "Warning: Cannot determine 2D data structure, copying as-is" << std::endl;
+                for (size_t i = 0; i < spatialSize && i < tempData.size(); ++i) {
+                    tempView(i) = tempData[i];
+                }
             }
         }
         
@@ -570,6 +628,46 @@ int main(int argc, char* argv[]) {
         // Add the Fahrenheit temperature field to fieldset
         inFs.add(tempFField);
         std::cout << "Added temperature in Fahrenheit field to fieldset" << std::endl;
+
+        // Create new field with same structure as temperature field
+        atlas::Field tempCField;
+        std::cout << "Creating temperature in Celsius field..." << std::endl;
+         // 3D field with vertical levels
+        tempCField = inputFunctionSpace_.createField<float>(
+            atlas::option::name("temperatureC") | 
+            atlas::option::levels(numLevels)
+        );
+        auto tempView = atlas::array::make_view<float, 2>(tempField);
+        auto tempCView = atlas::array::make_view<float, 2>(tempCField);
+        for (size_t i = 0; i < spatialSize; ++i) {
+            for (size_t level = 0; level < numLevels; ++level) {
+                float kelvin = tempView(i, level);
+                tempCView(i, level) = kelvin - 273.15f;
+            }
+        }
+        // Add the Celsius temperature field to fieldset
+        inFs.add(tempCField);
+        std::cout << "Added temperature in Celsius field to fieldset" << std::endl;
+    }
+
+    // now let's do something random and set temperature to 177.6K at every point
+    // in a box bounded by latitudes 30N to 60N and longitudes 60W to 0E (i.e., 300E to 360E)
+    std::cout << "Setting temperature to 177.6K in a box from 30N to 60N and 60W to 0E..." << std::endl;
+    auto tempView = atlas::array::make_view<float, 2>(tempField);
+    auto coordstmp = atlas::array::make_view<double, 2>(inputFunctionSpace_.lonlat());
+    for (size_t i = 0; i < spatialSize; ++i) {
+        double lon = coordstmp(i, 0); // longitude is first component
+        double lat = coordstmp(i, 1); // latitude is second component
+        if (lat >= 30.0 && lat <= 60.0 && (lon >= 300.0)) {
+            for (size_t level = 0; level < numLevels; ++level) {
+                tempView(i, level) = 177.6f;
+            }
+        }
+        if (lat >= -45.0 && lat <= -30.0 && (lon >= 300.0)) {
+            for (size_t level = 0; level < numLevels; ++level) {
+                tempView(i, level) = 377.6f;
+            }
+        }
     }
 
     // Create target grid and interpolation object
