@@ -370,18 +370,374 @@ int main(int argc, char* argv[]) {
     std::string latDimName = reader.getLatitudeDimName();
     std::string lonDimName = reader.getLongitudeDimName();
     
+    // Read temperature
+    auto tempIn = reader.getVariable("tmp");
+    std::cout << "Read variable 'tmp' with dimensions: ";
+    auto tempDims = tempIn.getDims();
+    for (size_t i = 0; i < tempDims.size(); i++) {
+        if (i > 0) std::cout << " x ";
+        std::cout << tempDims[i].getName() << "(" << tempDims[i].getSize() << ")";
+    }
+    std::cout << std::endl;
+
     // create an atlas functionspace
     std::string atlasInputGridName;
-    atlasInputGridName = "F" + std::to_string(lats.size()/2); // Assuming regular Gaussian grid with 2x latitudes for total points
+    // Create a regular lat-lon grid specification based on actual grid dimensions
+    atlasInputGridName = "L" + std::to_string(lons.size()) + "x" + std::to_string(lats.size());
+    std::cout << "Using input grid specification: " << atlasInputGridName << std::endl;
     const atlas::Grid gridInput(atlasInputGridName);
+    eckit::LocalConfiguration atlas_conf;
+    atlas_conf.set("halo", 1); // Add halo for structured interpolation
+    atlas::functionspace::StructuredColumns inputFunctionSpace_(gridInput, atlas_conf);
 
     // Create atlas fieldset from the input data
+    atlas::FieldSet inFs;
+
+    // Read temperature data from NetCDF variable
+    size_t totalTempSize = 1;
+    std::vector<size_t> tempShape;
+    for (const auto& dim : tempDims) {
+        size_t dimSize = dim.getSize();
+        tempShape.push_back(dimSize);
+        totalTempSize *= dimSize;
+        std::cout << "Temperature dimension " << dim.getName() << ": " << dimSize << std::endl;
+    }
+    
+    // Read the actual temperature data
+    std::vector<float> tempData(totalTempSize);
+    tempIn.getVar(tempData.data());
+    std::cout << "Successfully read " << totalTempSize << " temperature values" << std::endl;
+    
+    // Print min/max values from input NetCDF data
+    auto minIt = std::min_element(tempData.begin(), tempData.end());
+    auto maxIt = std::max_element(tempData.begin(), tempData.end());
+    std::cout << "Input NetCDF temperature range: [" << *minIt << ", " << *maxIt << "]" << std::endl;
+    
+    // Declare variables that will be used in multiple sections
+    size_t numLevels = 1;
+    size_t spatialSize = inputFunctionSpace_.size(); // number of grid points
+    
+    // Determine the number of vertical levels by looking at dimension names
+    for (const auto& dim : tempDims) {
+        std::string dimName = dim.getName();
+        // Common level dimension names in atmospheric data
+        if (dimName == "pfull" || dimName == "lev" || dimName == "level" || 
+            dimName == "plev" || dimName == "pressure" || dimName == "z" ||
+            dimName == "height" || dimName == "vertical") {
+            numLevels = dim.getSize();
+            std::cout << "Found vertical dimension '" << dimName << "' with " 
+                      << numLevels << " levels" << std::endl;
+            break;
+        }
+    }
+    
+    if (numLevels == 1 && tempShape.size() >= 3) {
+        std::cout << "Warning: Could not identify level dimension by name, using dimension order assumption" << std::endl;
+        // Fallback: assume first dimension is levels if we have 3+ dimensions
+        numLevels = tempShape[0];
+        std::cout << "Assuming first dimension is levels: " << numLevels << std::endl;
+    }
+    
+    // Create Atlas field for temperature
+    // Atlas fields typically expect [nodes] for 2D or [nodes, levels] for 3D
+    if (tempShape.size() >= 2) {
+        std::cout << "Creating Atlas field with " << numLevels << " vertical levels" << std::endl;
+        // Create the temperature field
+        atlas::Field tempField;
+        if (numLevels > 1) {
+            // 3D field with vertical levels
+            tempField = inputFunctionSpace_.createField<float>(
+                atlas::option::name("temperature") | 
+                atlas::option::levels(numLevels)
+            );
+        } else {
+            // 2D field
+            tempField = inputFunctionSpace_.createField<float>(
+                atlas::option::name("temperature")
+            );
+        }
+        std::cout << "Created Atlas field for temperature with shape: ";
+        for (int i = 0; i < tempField.rank(); ++i) {
+            if (i > 0) std::cout << " x ";
+            std::cout << tempField.shape(i);
+        }
+        std::cout << std::endl;
+        
+        // Copy data to Atlas field using appropriate view based on dimensions
+        std::cout << "Copying temperature data to Atlas field..." << std::endl;
+        
+        if (numLevels > 1) {
+            // 3D field: use 2D view (nodes x levels)
+            auto tempView = atlas::array::make_view<float, 2>(tempField);
+            
+            // Copy data from NetCDF format to Atlas field format
+            // NetCDF data is in [time, level, lat, lon] order - we need to skip time dimension (assume time=0)
+            size_t timeIndex = 0; // Use first (and only) time step
+            size_t latSize = 0, lonSize = 0;
+            
+            // Find lat and lon dimensions
+            for (const auto& dim : tempDims) {
+                if (dim.getName() == latDimName) {
+                    latSize = dim.getSize();
+                } else if (dim.getName() == lonDimName) {
+                    lonSize = dim.getSize();
+                }
+            }
+            
+            // Copy data accounting for [time, level, lat, lon] ordering
+            for (size_t level = 0; level < numLevels; ++level) {
+                for (size_t lat = 0; lat < latSize; ++lat) {
+                    for (size_t lon = 0; lon < lonSize; ++lon) {
+                        size_t netcdfIndex = timeIndex * (numLevels * latSize * lonSize) + 
+                                           level * (latSize * lonSize) + 
+                                           lat * lonSize + 
+                                           lon;
+                        size_t atlasIndex = lat * lonSize + lon; // atlas spatial index
+                        
+                        if (netcdfIndex < tempData.size() && atlasIndex < spatialSize) {
+                            tempView(atlasIndex, level) = tempData[netcdfIndex];
+                        }
+                    }
+                }
+            }
+        } else {
+            // 2D field: use 1D view (just nodes)
+            auto tempView = atlas::array::make_view<float, 1>(tempField);
+            
+            // Copy data from NetCDF format to Atlas field format
+            for (size_t i = 0; i < spatialSize && i < tempData.size(); ++i) {
+                tempView(i) = tempData[i];
+            }
+        }
+        
+        std::cout << "Finished copying temperature data to Atlas field" << std::endl;
+        // Add field to fieldset
+        inFs.add(tempField);
+        std::cout << "Added temperature field to fieldset with " << numLevels << " levels" << std::endl;
+        
+    } else {
+        std::cerr << "Error: Temperature field has insufficient dimensions" << std::endl;
+    }
 
     // Calculate and add a new field (e.g., temperature in Celsius from Kelvin)
+    
+    // Create a new field for temperature in Fahrenheit from the existing temperature field
+    atlas::Field tempField = inFs["temperature"];
+    if (!tempField.valid()) {
+        std::cerr << "Error: Temperature field not found in fieldset" << std::endl;
+    } else {
+        std::cout << "Creating temperature in Fahrenheit field..." << std::endl;
+        
+        // Create new field with same structure as temperature field
+        atlas::Field tempFField;
+        if (numLevels > 1) {
+            // 3D field with vertical levels
+            tempFField = inputFunctionSpace_.createField<float>(
+                atlas::option::name("temperatureF") | 
+                atlas::option::levels(numLevels)
+            );
+        } else {
+            // 2D field
+            tempFField = inputFunctionSpace_.createField<float>(
+                atlas::option::name("temperatureF")
+            );
+        }
+        
+        // Convert temperature from Kelvin to Fahrenheit
+        // Formula: °F = (K - 273.15) × 9/5 + 32
+        if (numLevels > 1) {
+            // 3D field: use 2D views
+            auto tempView = atlas::array::make_view<float, 2>(tempField);
+            auto tempFView = atlas::array::make_view<float, 2>(tempFField);
+            
+            for (size_t i = 0; i < spatialSize; ++i) {
+                for (size_t level = 0; level < numLevels; ++level) {
+                    float kelvin = tempView(i, level);
+                    tempFView(i, level) = (kelvin - 273.15f) * 9.0f/5.0f + 32.0f;
+                }
+            }
+        } else {
+            // 2D field: use 1D views
+            auto tempView = atlas::array::make_view<float, 1>(tempField);
+            auto tempFView = atlas::array::make_view<float, 1>(tempFField);
+            
+            for (size_t i = 0; i < spatialSize; ++i) {
+                float kelvin = tempView(i);
+                tempFView(i) = (kelvin - 273.15f) * 9.0f/5.0f + 32.0f;
+            }
+        }
+        
+        // Add the Fahrenheit temperature field to fieldset
+        inFs.add(tempFField);
+        std::cout << "Added temperature in Fahrenheit field to fieldset" << std::endl;
+    }
 
     // Create target grid and interpolation object
+    
+    std::cout << "Creating target grid: " << targetGridSpec << std::endl;
+    
+    // Create target Atlas grid from the specification
+    const atlas::Grid targetGrid(targetGridSpec);
+    std::cout << "Target grid created successfully" << std::endl;
+    std::cout << "Target grid size: " << targetGrid.size() << " points" << std::endl;
+    
+    // Create target functionspace WITHOUT halo to prevent data corruption
+    eckit::LocalConfiguration clean_conf; // No halo for interpolation target
+    atlas::functionspace::StructuredColumns targetFunctionSpace_(targetGrid, clean_conf);
+    std::cout << "Target functionspace created with " << targetFunctionSpace_.size() << " points" << std::endl;
+    
+    // Print some information about the target grid
+    if (targetGrid.name().find("F") == 0 || targetGrid.name().find("N") == 0 || targetGrid.name().find("O") == 0) {
+        std::cout << "Target grid type: Gaussian (" << targetGrid.name() << ")" << std::endl;
+    } else if (targetGrid.name().find("L") == 0) {
+        std::cout << "Target grid type: Regular Lat-Lon (" << targetGrid.name() << ")" << std::endl;
+    } else {
+        std::cout << "Target grid type: " << targetGrid.name() << std::endl;
+    }
 
-    // Perform interpolation for each variable requested
+    // Interpolate temperature and temperatureF fields to target grid
+    std::cout << "Creating interpolation object..." << std::endl;
+    
+    // Create Atlas interpolation object using bilinear method for structured grids
+    atlas::Interpolation interpolation(
+        atlas::option::type("structured-bilinear"),
+        inputFunctionSpace_, targetFunctionSpace_
+    );
+    
+    std::cout << "Interpolation object created successfully" << std::endl;
+    
+    // Create output fieldset and perform interpolation
+    atlas::FieldSet outFs;
+    for (const auto& field : inFs) {
+        std::cout << "Interpolating field: " << field.name() << std::endl;
+        
+        // Create output field with same structure as input
+        atlas::Field outField;
+        if (numLevels > 1) {
+            outField = targetFunctionSpace_.createField<float>(
+                atlas::option::name(field.name()) | 
+                atlas::option::levels(numLevels)
+            );
+        } else {
+            outField = targetFunctionSpace_.createField<float>(
+                atlas::option::name(field.name())
+            );
+        }
+        
+        // Perform the actual interpolation
+        interpolation.execute(field, outField);
+        
+        outFs.add(outField);
+        std::cout << "Successfully interpolated field: " << field.name() << std::endl;
+    }
 
-    // Write output to NetCDF file (not shown here, but you would use NetCDF C++ API to write the data from the atlas fields)
+    // Start to write output NetCDF file
+    NetCDFWriter writer(outputFile);
+    writer.copyGlobalAttributes(reader.getGlobalAttributes());
+    writer.addInterpolationHistory(inputFile, atlasInputGridName, targetGrid.name());
+
+    // Get target grid info (excluding halo points)
+    size_t targetGridSize = targetGrid.size(); // Use grid size, not functionspace size
+    
+    // Extract coordinates from target grid
+    std::cout << "Extracting coordinates from target grid..." << std::endl;
+    
+    auto coords = atlas::array::make_view<double, 2>(targetFunctionSpace_.lonlat());
+    
+    // Extract unique latitudes and longitudes for structured grids
+    std::vector<double> targetLats, targetLons;
+    std::set<double> uniqueLats, uniqueLons;
+    
+    // Collect all coordinate points from target grid
+    for (size_t i = 0; i < targetGridSize; ++i) {
+        double lon = coords(i, 0); // longitude is first component
+        double lat = coords(i, 1); // latitude is second component
+        uniqueLons.insert(lon);
+        uniqueLats.insert(lat);
+    }
+    
+    // Convert sets to vectors and sort
+    targetLons.assign(uniqueLons.begin(), uniqueLons.end());
+    targetLats.assign(uniqueLats.begin(), uniqueLats.end());
+    std::sort(targetLons.begin(), targetLons.end());
+    std::sort(targetLats.begin(), targetLats.end());
+    
+    std::cout << "Target grid dimensions: " << targetLons.size() << " longitudes x " 
+              << targetLats.size() << " latitudes" << std::endl;
+    std::cout << "Target latitude range: " << targetLats.front() << " to " << targetLats.back() << std::endl;
+    std::cout << "Target longitude range: " << targetLons.front() << " to " << targetLons.back() << std::endl;
+    
+    // Create NetCDF dimensions for target grid
+    auto lonDim = writer.addDimension("longitude", targetLons.size());
+    auto latDim = writer.addDimension("latitude", targetLats.size());
+    
+    // Add level dimension if we have vertical levels
+    netCDF::NcDim levelDim;
+    if (numLevels > 1) {
+        levelDim = writer.addDimension("level", numLevels);
+    }
+    
+    // Create coordinate variables in NetCDF file
+    auto lonVar = writer.addVariable("longitude", netCDF::ncDouble, {lonDim});
+    auto latVar = writer.addVariable("latitude", netCDF::ncDouble, {latDim});
+    
+    // Write coordinate data
+    writer.writeVariableData("longitude", targetLons);
+    writer.writeVariableData("latitude", targetLats);
+    
+    std::cout << "Created NetCDF coordinate variables and wrote coordinate data" << std::endl;
+
+    // Write interpolated fields to NetCDF file
+    for (const auto& field : outFs) {
+        std::cout << "Writing field to NetCDF: " << field.name() << std::endl;
+        
+        // Create variable in NetCDF file with proper dimension ordering
+        std::vector<netCDF::NcDim> varDims;
+        if (numLevels > 1) {
+            varDims = {levelDim, latDim, lonDim}; // 3D field: level, lat, lon (C order)
+        } else {
+            varDims = {latDim, lonDim}; // 2D field: lat, lon
+        }
+        auto var = writer.addVariable(field.name(), netCDF::ncFloat, varDims);
+        
+        // Get the total expected output size
+        size_t expectedSize = targetLons.size() * targetLats.size();
+        if (numLevels > 1) expectedSize *= numLevels;
+        
+        // Copy data from Atlas field (should match exactly since no halo)
+        std::vector<float> fieldData;
+        
+        if (numLevels > 1) {
+            // 3D field: copy data directly from Atlas 2D view
+            auto fieldView = atlas::array::make_view<float, 2>(field);
+            fieldData.resize(expectedSize);
+            
+            // Since we're using clean functionspace, sizes should match exactly
+            size_t idx = 0;
+            for (size_t level = 0; level < numLevels; ++level) {
+                for (size_t i = 0; i < targetGridSize; ++i) {
+                    fieldData[idx] = fieldView(i, level);
+                    idx++;
+                }
+            }
+        } else {
+            // 2D field: copy data directly from Atlas 1D view
+            auto fieldView = atlas::array::make_view<float, 1>(field);
+            fieldData.resize(expectedSize);
+            
+            for (size_t i = 0; i < targetGridSize; ++i) {
+                fieldData[i] = fieldView(i);
+            }
+        }
+        
+        // Print min/max values for output Atlas field
+        auto minVal = *std::min_element(fieldData.begin(), fieldData.end());
+        auto maxVal = *std::max_element(fieldData.begin(), fieldData.end());
+        
+        writer.writeVariableData(field.name(), fieldData);
+        std::cout << "Successfully wrote field: " << field.name() << " with dimensions " 
+                  << targetLons.size() << "x" << targetLats.size();
+        if (numLevels > 1) std::cout << "x" << numLevels;
+        std::cout << " | Range: [" << minVal << ", " << maxVal << "]" << std::endl;
+    }
 }
