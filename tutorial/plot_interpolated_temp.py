@@ -47,20 +47,22 @@ def plot_temperature_maps(filename):
     lon_grid, lat_grid = np.meshgrid(lons, lats)
     
     # Select representative levels for plotting
+    # Note: Vertical coordinate goes from model top (level 0) to surface (level shape[0]-1)
     levels_to_plot = [
-        (0, "Surface (Level 0)"),
-        (temp_k.shape[0]//4, f"Upper Troposphere (Level {temp_k.shape[0]//4})"),
+        (0, "Top Level (Level 0)"),
+        (temp_k.shape[0]//4, f"Upper Atmosphere (Level {temp_k.shape[0]//4})"),
         (temp_k.shape[0]//2, f"Mid Atmosphere (Level {temp_k.shape[0]//2})"),
-        (-1, f"Top Level (Level {temp_k.shape[0]-1})")
+        (temp_k.shape[0]//4 * 3, f"Mid Troposphere (Level {temp_k.shape[0]//4 * 3})"),
+        (-1, f"Surface (Level {temp_k.shape[0]-1})")
     ]
     
     # Create figure with subplots
-    fig = plt.figure(figsize=(20, 16))
+    fig = plt.figure(figsize=(20, 20))
     
     # Plot each selected level
     for i, (level_idx, title_suffix) in enumerate(levels_to_plot):
         # Temperature in Kelvin
-        ax1 = fig.add_subplot(4, 2, 2*i+1, projection=ccrs.PlateCarree())
+        ax1 = fig.add_subplot(5, 2, 2*i+1, projection=ccrs.PlateCarree())
         ax1.set_global()
         ax1.coastlines()
         ax1.add_feature(cfeature.BORDERS)
@@ -79,7 +81,7 @@ def plot_temperature_maps(filename):
         plt.colorbar(im1, ax=ax1, shrink=0.8, label='Temperature (K)')
         
         # Temperature in Fahrenheit
-        ax2 = fig.add_subplot(4, 2, 2*i+2, projection=ccrs.PlateCarree())
+        ax2 = fig.add_subplot(5, 2, 2*i+2, projection=ccrs.PlateCarree())
         ax2.set_global()
         ax2.coastlines()
         ax2.add_feature(cfeature.BORDERS)
