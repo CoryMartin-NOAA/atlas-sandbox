@@ -47,11 +47,12 @@ def plot_temperature_maps(filename):
     lon_grid, lat_grid = np.meshgrid(lons, lats)
     
     # Select representative levels for plotting
+    # Note: Vertical coordinate goes from model top (level 0) to surface (level shape[0]-1)
     levels_to_plot = [
-        (0, "Surface (Level 0)"),
-        (temp_k.shape[0]//4, f"Upper Troposphere (Level {temp_k.shape[0]//4})"),
+        (0, "Top Level (Level 0)"),
+        (temp_k.shape[0]//4, f"Upper Atmosphere (Level {temp_k.shape[0]//4})"),
         (temp_k.shape[0]//2, f"Mid Atmosphere (Level {temp_k.shape[0]//2})"),
-        (-1, f"Top Level (Level {temp_k.shape[0]-1})")
+        (-1, f"Surface (Level {temp_k.shape[0]-1})")
     ]
     
     # Create figure with subplots
